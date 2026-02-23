@@ -7,26 +7,29 @@ import io
 import json
 
 # --- 1. CORE CONFIGURATION ---
-st.set_page_config(page_title="Medical Passport", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
+# Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# EXPANDED GLOBAL MAPPING DATA
+# EXPANDED GLOBAL MAPPING DATA (INCLUDING POLAND & MULTI-REGION)
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
         "Ireland": "Intern", "Canada": "PGY-1", "Dubai/DHA": "Intern",
         "India/Pakistan": "House Officer / Intern", "Nigeria": "House Officer",
-        "China/S.Korea": "Junior Resident", "Europe": "Junior Doctor (Intern)",
+        "China/S.Korea": "Junior Resident", "Europe": "Junior Doctor",
+        "Poland": "Lekarz stażysta",
         "Responsibilities": "Ward based, supervised prescribing, basic clinical procedures."
     },
     "Tier 2: Intermediate (SHO/Resident)": {
         "UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO",
         "Ireland": "SHO", "Canada": "Junior Resident", "Dubai/DHA": "GP / Resident",
         "India/Pakistan": "PG Resident / Medical Officer", "Nigeria": "Registrar",
-        "China/S.Korea": "Resident", "Europe": "Resident / Assistant Physician",
+        "China/S.Korea": "Resident", "Europe": "Resident Physician",
+        "Poland": "Lekarz rezydent (Junior)",
         "Responsibilities": "Acute assessments, procedural proficiency, core specialty rotations."
     },
     "Tier 3: Senior (Registrar/Fellow)": {
@@ -34,6 +37,7 @@ EQUIVALENCY_MAP = {
         "Ireland": "Specialist Registrar (SpR)", "Canada": "Senior Resident / Fellow", "Dubai/DHA": "Specialist (P)",
         "India/Pakistan": "Senior Resident / Registrar", "Nigeria": "Senior Registrar",
         "China/S.Korea": "Attending Physician / Fellow", "Europe": "Specialist Trainee / Senior Registrar",
+        "Poland": "Lekarz rezydent (Senior)",
         "Responsibilities": "Team leadership, specialty decision making, independent in core procedures."
     },
     "Tier 4: Expert (Consultant/Attending)": {
@@ -41,6 +45,7 @@ EQUIVALENCY_MAP = {
         "Ireland": "Consultant", "Canada": "Staff Specialist", "Dubai/DHA": "Consultant",
         "India/Pakistan": "Consultant / Asst. Professor", "Nigeria": "Consultant",
         "China/S.Korea": "Chief Physician", "Europe": "Specialist / Consultant",
+        "Poland": "Lekarz specjalista",
         "Responsibilities": "Final clinical accountability, service leadership, senior training."
     }
 }
@@ -49,7 +54,8 @@ COUNTRY_KEY_MAP = {
     "United Kingdom": "UK", "United States": "US", "Australia": "Australia",
     "Ireland": "Ireland", "Canada": "Canada", "Dubai (DHA)": "Dubai/DHA",
     "India & Pakistan": "India/Pakistan", "Nigeria": "Nigeria",
-    "China & S.Korea": "China/S.Korea", "Europe (General)": "Europe"
+    "China & S.Korea": "China/S.Korea", "Europe (General)": "Europe",
+    "Poland": "Poland"
 }
 
 # --- 2. PROFESSIONAL PDF GENERATOR ---
@@ -58,7 +64,7 @@ class MedicalCV(FPDF):
         self.set_font('Arial', 'B', 16)
         self.cell(0, 10, 'Professional Medical Portfolio', 0, 1, 'C')
         self.set_font('Arial', 'I', 10)
-        self.cell(0, 8, 'Verified Clinical Credential Document', 0, 1, 'C')
+        self.cell(0, 8, 'Standardized Global Clinical Credential', 0, 1, 'C')
         self.ln(10)
 
     def section_header(self, title):
@@ -78,21 +84,20 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
         data = EQUIVALENCY_MAP[tier_key]
         pdf.section_header("Professional Standing & International Equivalency")
         pdf.set_font('Arial', 'B', 10)
-        # Handle layout for multiple countries
         for country in selected_countries:
             key = COUNTRY_KEY_MAP.get(country)
-            if key: pdf.cell(0, 7, f"{country}: {data[key]}", 0, 1)
+            if key: pdf.cell(0, 7, f"{country} Equivalent: {data[key]}", 0, 1)
         pdf.ln(2)
         pdf.set_font('Arial', 'I', 10)
         pdf.multi_cell(0, 6, f"Scope of Practice: {data['Responsibilities']}")
     
     pdf.ln(5)
-    pdf.section_header("Clinical Experience & Placements")
+    pdf.section_header("Clinical Experience & Rotations")
     for r in rotations:
         pdf.set_font('Arial', 'B', 10)
         pdf.cell(0, 6, f"{r['hospital']} - {r['specialty']}", 0, 1)
         pdf.set_font('Arial', '', 10)
-        pdf.cell(0, 6, f"Local Grade: {r['grade']} | Dates: {r['dates']}", 0, 1)
+        pdf.cell(0, 6, f"Role: {r['grade']} | Dates: {r['dates']}", 0, 1)
         pdf.ln(2)
 
     pdf.ln(5)
@@ -117,8 +122,6 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
 # --- 3. DATABASE UTILITIES ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = ""
 
 def fetch_user_data(table_name):
     try:
@@ -129,7 +132,7 @@ def fetch_user_data(table_name):
 # --- 4. THE PASSPORT DASHBOARD ---
 def main_dashboard():
     st.sidebar.title("🏥 Clinical Session")
-    st.sidebar.write(f"Logged in: {st.session_state.user_email}")
+    st.sidebar.write(f"Physician: {st.session_state.user_email}")
     if st.sidebar.button("Log Out"):
         st.session_state.authenticated = False
         st.rerun()
@@ -141,6 +144,7 @@ def main_dashboard():
     procedures = fetch_user_data("procedures")
     projects = fetch_user_data("projects")
 
+    # Load preferences
     saved_countries = []
     if profile and profile[0].get('selected_countries'):
         saved_countries = profile[0]['selected_countries']
@@ -153,46 +157,41 @@ def main_dashboard():
 
     with tab1:
         st.subheader("Global Standing Mapping")
-        st.info("Select your seniority and the jurisdictions for comparison.")
-        
         current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try:
             t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
         except: t_idx = 0
         
-        selected_tier = st.selectbox("Define Your Clinical Standing", list(EQUIVALENCY_MAP.keys()), index=t_idx)
+        selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         
-        all_countries = list(COUNTRY_KEY_MAP.keys())
         active_countries = st.multiselect(
-            "Which healthcare systems do you want to compare?",
-            options=all_countries,
-            default=saved_countries if saved_countries else ["United Kingdom"]
+            "Which healthcare systems are relevant to you?",
+            options=list(COUNTRY_KEY_MAP.keys()),
+            default=saved_countries if saved_countries else ["United Kingdom", "Poland"]
         )
 
         if active_countries:
             st.write("### International Comparison Preview")
             t_data = EQUIVALENCY_MAP[selected_tier]
-            # Dynamic Grid based on count
-            grid_cols = st.columns(3)
+            cols = st.columns(3)
             for i, country in enumerate(active_countries):
                 key = COUNTRY_KEY_MAP[country]
-                grid_cols[i % 3].metric(country, t_data[key])
+                cols[i % 3].metric(country, t_data[key])
         
-        if st.button("💾 Lock Standing & Countries"):
+        if st.button("💾 Save Preferences"):
             client.table("profiles").upsert({
                 "user_email": st.session_state.user_email, 
                 "global_tier": selected_tier,
                 "selected_countries": active_countries
             }, on_conflict="user_email").execute()
-            st.success("Global preferences saved."); st.rerun()
+            st.success("Global Standing Locked."); st.rerun()
 
-    # --- OTHER TABS REMAIN SAME AS PREVIOUS ---
     with tab2:
-        st.subheader("Experience Ledger")
+        st.subheader("Clinical Experience Ledger")
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_rot"):
             h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Local Grade")
-            if st.form_submit_button("Add Rotation"):
+            if st.form_submit_button("Add Placement"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
 
@@ -201,7 +200,7 @@ def main_dashboard():
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_proc"):
             n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Count", 1)
-            if st.form_submit_button("Log Procedure"):
+            if st.form_submit_button("Log Skill"):
                 client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": c}).execute()
                 st.rerun()
 
@@ -211,7 +210,7 @@ def main_dashboard():
         with st.form("add_proj"):
             t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
             title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
-            if st.form_submit_button("Submit"):
+            if st.form_submit_button("Sync"):
                 client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title, "role": r, "year": y}).execute()
                 st.rerun()
 
@@ -221,15 +220,15 @@ def main_dashboard():
 
     with tab6:
         st.subheader("Generate Targeted Clinical Portfolio")
-        final_countries = st.multiselect(
+        export_countries = st.multiselect(
             "Include in PDF Header:",
             options=list(COUNTRY_KEY_MAP.keys()),
-            default=saved_countries if saved_countries else ["United Kingdom"]
+            default=active_countries
         )
         if st.button("🏗️ Compile Professional CV"):
             try:
-                pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, final_countries)
-                st.download_button(label="⬇️ Download Professional PDF", data=pdf_bytes, file_name="Medical_Passport_CV.pdf", mime="application/pdf")
+                pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, export_countries)
+                st.download_button(label="⬇️ Download PDF CV", data=pdf_bytes, file_name="Medical_Passport_CV.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
 # --- 5. AUTHENTICATION ---
