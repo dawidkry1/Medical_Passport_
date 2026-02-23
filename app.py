@@ -14,7 +14,7 @@ URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# EXPANDED GLOBAL MAPPING DATA (INCLUDING POLAND & MULTI-REGION)
+# GLOBAL MAPPING DATA
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
@@ -120,8 +120,11 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATABASE UTILITIES ---
+# Initialize session state securely
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = ""
 
 def fetch_user_data(table_name):
     try:
@@ -135,6 +138,7 @@ def main_dashboard():
     st.sidebar.write(f"Physician: {st.session_state.user_email}")
     if st.sidebar.button("Log Out"):
         st.session_state.authenticated = False
+        st.session_state.user_email = ""
         st.rerun()
 
     st.title("🩺 Global Medical Passport")
@@ -189,7 +193,7 @@ def main_dashboard():
     with tab2:
         st.subheader("Clinical Experience Ledger")
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
-        with st.form("add_rot"):
+        with st.form("add_rot", clear_on_submit=True):
             h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Local Grade")
             if st.form_submit_button("Add Placement"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
@@ -198,7 +202,7 @@ def main_dashboard():
     with tab3:
         st.subheader("Procedural Log")
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
-        with st.form("add_proc"):
+        with st.form("add_proc", clear_on_submit=True):
             n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Count", 1)
             if st.form_submit_button("Log Skill"):
                 client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": c}).execute()
@@ -207,7 +211,7 @@ def main_dashboard():
     with tab4:
         st.subheader("Academic & QIP")
         if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
-        with st.form("add_proj"):
+        with st.form("add_proj", clear_on_submit=True):
             t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
             title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
             if st.form_submit_button("Sync"):
@@ -216,7 +220,7 @@ def main_dashboard():
 
     with tab5:
         st.subheader("🛡️ Verified Credential Vault")
-        st.file_uploader("Upload Degree/License", type=["pdf", "jpg", "png"])
+        st.info("Storage feature coming soon. Use this space for medical licenses.")
 
     with tab6:
         st.subheader("Generate Targeted Clinical Portfolio")
@@ -231,18 +235,37 @@ def main_dashboard():
                 st.download_button(label="⬇️ Download PDF CV", data=pdf_bytes, file_name="Medical_Passport_CV.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
-# --- 5. AUTHENTICATION ---
+# --- 5. AUTHENTICATION (FIXED BUGGY LOGIN) ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
-    e, p = st.text_input("Email"), st.text_input("Password", type="password")
-    if st.button("Sign In"):
-        try:
-            res = client.auth.sign_in_with_password({"email": e, "password": p})
-            if res.session:
-                st.session_state.authenticated, st.session_state.user_email = True, e
-                st.rerun()
-        except: st.error("Login failed")
+    
+    with st.container():
+        e = st.text_input("Email", placeholder="doctor@hospital.com")
+        p = st.text_input("Password", type="password")
+        
+        col1, col2 = st.columns(2)
+        
+        if col1.button("Sign In", use_container_width=True):
+            try:
+                # Direct attempt
+                res = client.auth.sign_in_with_password({"email": e, "password": p})
+                if res.user:
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = e
+                    st.success("Authenticated! Loading dashboard...")
+                    time.sleep(0.5) # Brief pause for state to settle
+                    st.rerun()
+            except Exception as ex:
+                st.error("Login failed. Please check your credentials.")
 
+        if col2.button("Register New Account", use_container_width=True):
+            try:
+                client.auth.sign_up({"email": e, "password": p})
+                st.info("Registration email sent! Please check your inbox.")
+            except:
+                st.error("Registration failed. Email might already be in use.")
+
+# Main entry point
 if st.session_state.authenticated:
     main_dashboard()
 else:
