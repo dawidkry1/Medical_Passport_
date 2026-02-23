@@ -21,7 +21,6 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
@@ -90,7 +89,7 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
     pdf.set_font('Arial', 'B', 14)
     pdf.cell(0, 10, f"Physician: {email}", 0, 1)
     
-    # Include Professional Summary in PDF
+    # Summary
     summary = profile[0].get('summary', '') if profile else ""
     if summary:
         pdf.section_header("Professional Summary")
@@ -98,10 +97,11 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
         pdf.multi_cell(0, 6, summary)
         pdf.ln(5)
 
+    # RE-IMPLEMENTED Custom Country Comparison in PDF
     tier_key = profile[0]['global_tier'] if profile else None
     if tier_key in EQUIVALENCY_MAP:
         data = EQUIVALENCY_MAP[tier_key]
-        pdf.section_header("Standing & International Equivalency")
+        pdf.section_header("Professional Standing & International Equivalency")
         pdf.set_font('Arial', 'B', 10)
         for country in selected_countries:
             key = COUNTRY_KEY_MAP.get(country)
@@ -110,7 +110,16 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
         pdf.set_font('Arial', 'I', 10)
         pdf.multi_cell(0, 6, f"Scope of Practice: {data['Responsibilities']}")
     
-    # Clinical, Procedures, and Projects Sections (Omitted for brevity in code display but logically included)
+    # Clinical experience
+    pdf.ln(5)
+    pdf.section_header("Clinical Experience & Rotations")
+    for r in rotations:
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(0, 6, f"{r['hospital']} - {r['specialty']}", 0, 1)
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 6, f"Role: {r['grade']} | Dates: {r['dates']}", 0, 1)
+        pdf.ln(2)
+
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATABASE UTILITIES ---
@@ -141,43 +150,40 @@ def main_dashboard():
         saved_countries = profile[0]['selected_countries']
         if isinstance(saved_countries, str): saved_countries = json.loads(saved_countries)
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌐 Equivalency", "📊 Analytics", "🏥 Rotations", "💉 Procedures", "🔬 Academic", "🛡️ Vault"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌐 Equivalency", "📊 Analytics", "🏥 Rotations", "💉 Procedures", "🔬 Academic", "🛡️ Vault & Export"])
 
     with tab1:
         st.subheader("Global Standing Mapping")
-        col_1, col_2 = st.columns([0.4, 0.6])
-        with col_1:
-            current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
-            try: t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
-            except: t_idx = 0
-            selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
-            active_countries = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=saved_countries if saved_countries else ["United Kingdom", "Poland"])
-            summary_text = st.text_area("Professional Pitch", value=profile[0].get('summary', '') if profile else "", height=120)
-            if st.button("💾 Save Profile"):
-                client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier, "selected_countries": active_countries, "summary": summary_text}, on_conflict="user_email").execute()
-                st.success("Profile Synced."); st.rerun()
-        with col_2:
-            if active_countries:
-                t_data = EQUIVALENCY_MAP[selected_tier]
-                cols = st.columns(3)
-                for i, country in enumerate(active_countries):
-                    key = COUNTRY_KEY_MAP[country]
-                    cols[i % 3].metric(country, t_data[key])
-                st.info(f"**Responsibility Level:** {t_data['Responsibilities']}")
-            
+        current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
+        try: t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
+        except: t_idx = 0
+        selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
+        active_countries = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=saved_countries if saved_countries else ["United Kingdom", "Poland"])
+        summary_text = st.text_area("Professional Pitch", value=profile[0].get('summary', '') if profile else "", height=120)
 
+        if active_countries:
+            t_data = EQUIVALENCY_MAP[selected_tier]
+            cols = st.columns(3)
+            for i, country in enumerate(active_countries):
+                key = COUNTRY_KEY_MAP[country]
+                cols[i % 3].metric(country, t_data[key])
+        
+        if st.button("💾 Save Preferences"):
+            client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier, "selected_countries": active_countries, "summary": summary_text}, on_conflict="user_email").execute()
+            st.success("Preferences Saved."); st.rerun()
+
+    # (Tabs 2, 3, 4, 5 remain standard)
     with tab2:
-        st.subheader("Clinical Competency Metrics")
+        st.subheader("Competency Metrics")
         if procedures:
             df = pd.DataFrame(procedures)
             st.bar_chart(df.groupby(['procedure', 'level'])['count'].sum().unstack().fillna(0))
-        else: st.info("Log procedures to view analytics.")
 
     with tab3:
         st.subheader("Clinical Experience")
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_rot", clear_on_submit=True):
-            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Local Grade")
+            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Grade")
             if st.form_submit_button("Add Placement"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
@@ -192,31 +198,38 @@ def main_dashboard():
                 st.rerun()
 
     with tab5:
-        st.subheader("Academic & QIP")
+        st.subheader("Academic Portfolio")
         if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_proj", clear_on_submit=True):
             t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
             title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
-            if st.form_submit_button("Sync Project"):
+            if st.form_submit_button("Log Project"):
                 client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title, "role": r, "year": y}).execute()
                 st.rerun()
 
     with tab6:
-        st.subheader("🛡️ Verified Credential Vault")
-        up_file = st.file_uploader("Upload Degree/License", type=['pdf', 'jpg', 'png'])
+        st.subheader("🛡️ Credential Vault")
+        up_file = st.file_uploader("Upload Evidence", type=['pdf', 'jpg', 'png'])
         if up_file and st.button("📤 Vault File"):
-            with st.spinner("Uploading..."):
-                client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up_file.name}", up_file.getvalue())
-                st.success("File Vaulted."); st.rerun()
+            client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up_file.name}", up_file.getvalue())
+            st.success("File Vaulted.")
+        
         files = client.storage.from_('medical-vault').list(st.session_state.user_email)
         for f in files:
             c1, c2 = st.columns([0.8, 0.2])
             c1.write(f"📄 {f['name']}")
             res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
             c2.link_button("View", res['signedURL'])
+        
         st.divider()
+        st.subheader("📄 Generate Professional CV")
+        # RESTORED Custom Country Selection for Export
+        export_countries = st.multiselect("Select Countries for CV Equivalency Header:", 
+                                         options=list(COUNTRY_KEY_MAP.keys()), 
+                                         default=active_countries)
+        
         if st.button("🏗️ Compile Professional CV"):
-            pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, active_countries)
+            pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, export_countries)
             st.download_button(label="⬇️ Download CV", data=pdf_bytes, file_name="Medical_Passport.pdf", mime="application/pdf")
 
 # --- 5. AUTHENTICATION ---
@@ -228,7 +241,7 @@ def login_screen():
             res = client.auth.sign_in_with_password({"email": e, "password": p})
             if res.user:
                 st.session_state.authenticated = True; st.session_state.user_email = e; st.rerun()
-        except: st.error("Credential verification failed.")
+        except: st.error("Verification failed.")
 
 if st.session_state.authenticated: main_dashboard()
 else: login_screen()
