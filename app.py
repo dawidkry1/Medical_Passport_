@@ -6,12 +6,10 @@ from supabase import create_client, Client
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="Medical Passport", page_icon="🏥", layout="wide")
 
-# Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# International Equivalency Data
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1",
@@ -39,7 +37,6 @@ EQUIVALENCY_MAP = {
     }
 }
 
-# Initialize Session States
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
@@ -74,7 +71,6 @@ def main_dashboard():
         "🛡️ Vault"
     ])
 
-    # --- TAB 1: GLOBAL EQUIVALENCY ---
     with tab1:
         st.subheader("Global Seniority Mapping")
         st.info("Translate your current local grade into international equivalents.")
@@ -91,16 +87,15 @@ def main_dashboard():
         
         if st.button("Update Global Tier on Passport"):
             try:
-                # Upsert ensures it creates or updates the user profile
+                # Optimized Upsert
                 client.table("profiles").upsert({
                     "user_email": st.session_state.user_email, 
                     "global_tier": selected_tier
-                }, on_conflict="user_email").execute()
+                }).execute()
                 st.success("Equivalency Applied Successfully.")
             except Exception as e:
-                st.error(f"Error updating profile: {e}. Did you run the SQL migration?")
+                st.error(f"Error: {e}")
 
-    # --- TAB 2: ROTATIONS ---
     with tab2:
         st.subheader("Clinical Experience Ledger")
         rotations = fetch_user_data("rotations")
@@ -120,7 +115,6 @@ def main_dashboard():
                     client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": r}).execute()
                     st.rerun()
 
-    # --- TAB 3: PROCEDURES ---
     with tab3:
         st.subheader("Procedural Logbook")
         procs = fetch_user_data("procedures")
@@ -136,7 +130,6 @@ def main_dashboard():
                 client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": p_name, "level": p_level, "count": p_count}).execute()
                 st.rerun()
 
-    # --- TAB 4: ACADEMIC & QIP ---
     with tab4:
         st.subheader("Research & Leadership Portfolio")
         projects = fetch_user_data("projects")
@@ -156,7 +149,6 @@ def main_dashboard():
                     client.table("projects").insert({"user_email": st.session_state.user_email, "type": p_type, "title": p_title, "role": p_role, "year": p_year}).execute()
                     st.rerun()
 
-    # --- TAB 5: DOCUMENT VAULT ---
     with tab5:
         st.subheader("🛡️ Verified Credential Vault")
         uploaded_file = st.file_uploader("Upload Degree/License (PDF/IMG)", type=["pdf", "jpg", "png"])
@@ -234,7 +226,6 @@ def login_screen():
             client.auth.reset_password_for_email(f_e, options={"redirect_to": "https://medical-passport.streamlit.app?type=recovery"})
             st.success("Link sent.")
 
-# --- 4. EXECUTION ---
 if not handle_recovery():
     if st.session_state.authenticated:
         main_dashboard()
