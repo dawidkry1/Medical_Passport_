@@ -12,21 +12,42 @@ URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
+# EXPANDED GLOBAL MAPPING
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
-        "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
+        "UK": "Foundation Year 1", 
+        "US": "PGY-1 (Intern)", 
+        "Australia": "Intern",
+        "Ireland": "Intern",
+        "Canada": "PGY-1 (Junior Resident)",
+        "EU/International": "Junior Doctor / Intern",
         "Responsibilities": "Ward based, supervised prescribing, basic clinical procedures."
     },
     "Tier 2: Intermediate (SHO/Resident)": {
-        "UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO",
+        "UK": "FY2 / Core Trainee", 
+        "US": "PGY-2/3 (Resident)", 
+        "Australia": "Resident / RMO",
+        "Ireland": "Senior House Officer (SHO)",
+        "Canada": "Junior Resident (R2/R3)",
+        "EU/International": "Resident Physician",
         "Responsibilities": "Acute assessments, procedural proficiency, core specialty rotations."
     },
     "Tier 3: Senior (Registrar/Fellow)": {
-        "UK": "ST3+ / Registrar", "US": "Chief Resident / Fellow", "Australia": "Registrar",
+        "UK": "ST3+ / Registrar", 
+        "US": "Chief Resident / Fellow", 
+        "Australia": "Registrar",
+        "Ireland": "Registrar / Specialist Registrar",
+        "Canada": "Senior Resident / Fellow",
+        "EU/International": "Specialist Trainee / Senior Registrar",
         "Responsibilities": "Team leadership, specialty decision making, independent in core procedures."
     },
     "Tier 4: Expert (Consultant/Attending)": {
-        "UK": "Consultant / SAS", "US": "Attending Physician", "Australia": "Consultant / Specialist",
+        "UK": "Consultant / SAS", 
+        "US": "Attending Physician", 
+        "Australia": "Consultant / Specialist",
+        "Ireland": "Consultant",
+        "Canada": "Staff Physician / Specialist",
+        "EU/International": "Specialist / Consultant",
         "Responsibilities": "Final clinical accountability, service leadership, senior training."
     }
 }
@@ -61,13 +82,15 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
         pdf.section_header("Professional Standing & International Equivalency")
         pdf.set_font('Arial', 'B', 11)
         
-        # Only add the countries the user selected
-        if "United Kingdom" in selected_countries:
-            pdf.cell(0, 7, f"United Kingdom Equivalent: {data['UK']}", 0, 1)
-        if "United States" in selected_countries:
-            pdf.cell(0, 7, f"United States Equivalent: {data['US']}", 0, 1)
-        if "Australia" in selected_countries:
-            pdf.cell(0, 7, f"Australia Equivalent: {data['Australia']}", 0, 1)
+        # Mapping Display logic
+        country_keys = {
+            "United Kingdom": "UK", "United States": "US", "Australia": "Australia",
+            "Ireland": "Ireland", "Canada": "Canada", "EU/International": "EU/International"
+        }
+        
+        for display_name in selected_countries:
+            key = country_keys[display_name]
+            pdf.cell(0, 7, f"{display_name} Equivalent: {data[key]}", 0, 1)
             
         pdf.ln(2)
         pdf.set_font('Arial', 'I', 10)
@@ -133,7 +156,7 @@ def main_dashboard():
         st.rerun()
 
     st.title("🩺 Professional Medical Passport")
-    st.caption("International Physician Credential Vault & Equivalency Ledger")
+    st.caption("International Physician Credential Vault & Global Equivalency Ledger")
 
     profile = fetch_user_data("profiles")
     rotations = fetch_user_data("rotations")
@@ -146,27 +169,36 @@ def main_dashboard():
 
     with tab1:
         st.subheader("Global Standing Mapping")
+        st.info("Your selection here defines your clinical 'weight' when translated into other healthcare systems.")
         current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try:
             t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
         except: t_idx = 0
         
-        selected_tier = st.selectbox("Current Global Equivalent", list(EQUIVALENCY_MAP.keys()), index=t_idx)
+        selected_tier = st.selectbox("Define Your Clinical Standing", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         t_data = EQUIVALENCY_MAP[selected_tier]
+        
+        # Grid display for visual confirmation
+        st.write("### International Comparison Preview")
         c1, c2, c3 = st.columns(3)
         c1.metric("UK", t_data["UK"])
         c2.metric("US", t_data["US"])
-        c3.metric("Aus", t_data["Australia"])
+        c3.metric("Canada", t_data["Canada"])
         
-        if st.button("💾 Save to Passport"):
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Australia", t_data["Australia"])
+        c5.metric("Ireland", t_data["Ireland"])
+        c6.metric("EU/Int.", t_data["EU/International"])
+        
+        if st.button("💾 Lock Standing to Passport"):
             client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
-            st.success("Standing Saved"); st.rerun()
+            st.success("Global Standing Updated."); st.rerun()
 
     with tab2:
         st.subheader("Clinical Experience Ledger")
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_rot"):
-            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Local Grade")
+            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates (e.g. Aug 2024 - Feb 2025)"), st.text_input("Local Grade")
             if st.form_submit_button("Add Rotation"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
@@ -177,57 +209,54 @@ def main_dashboard():
             df_p = pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore')
             st.table(df_p)
         with st.form("add_proc"):
-            n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Count", 1)
+            n, l, c = st.text_input("Procedure Name"), st.selectbox("Independence Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Lifetime Count", 1)
             if st.form_submit_button("Log Procedure"):
                 client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": c}).execute()
                 st.rerun()
 
     with tab4:
-        st.subheader("Academic & QIP")
+        st.subheader("Academic, QIP & Research")
         if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_proj"):
-            t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
-            title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
-            if st.form_submit_button("Submit"):
+            t = st.selectbox("Category", ["Clinical Audit", "Research", "QIP", "Teaching", "Leadership"])
+            title, r, y = st.text_input("Project Title"), st.text_input("Your Role"), st.text_input("Year")
+            if st.form_submit_button("Sync Project"):
                 client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title, "role": r, "year": y}).execute()
                 st.rerun()
 
     with tab5:
         st.subheader("🛡️ Verified Credential Vault")
-        uploaded_file = st.file_uploader("Upload Degree/License", type=["pdf", "jpg", "png"])
+        uploaded_file = st.file_uploader("Upload Degree/License/Registration", type=["pdf", "jpg", "png"])
         if uploaded_file and st.button("🚀 Secure Upload"):
             safe_email = st.session_state.user_email.replace("@", "_").replace(".", "_")
             client.storage.from_("credentials").upload(f"{safe_email}/{uploaded_file.name}", uploaded_file.getvalue(), {"x-upsert": "true"})
-            st.success("Archived."); st.rerun()
+            st.success("File Archived in Secure Vault."); st.rerun()
 
     with tab6:
         st.subheader("Generate Targeted Clinical Portfolio")
-        st.write("Customize which jurisdictions appear on your peer-to-peer CV.")
+        st.write("Select which medical systems to display on your PDF header:")
         
-        country_options = ["United Kingdom", "United States", "Australia"]
+        country_options = ["United Kingdom", "United States", "Canada", "Australia", "Ireland", "EU/International"]
         selected_countries = st.multiselect(
-            "Select countries to include in Professional Standing header:",
+            "Target Jurisdictions:",
             options=country_options,
-            default=["United Kingdom"] # Common default
+            default=["United Kingdom"]
         )
         
-        if not selected_countries:
-            st.warning("Please select at least one country to include in the header.")
-        
-        if st.button("🏗️ Compile Medical CV"):
+        if st.button("🏗️ Compile Professional CV"):
             if selected_countries:
                 try:
                     pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, selected_countries)
-                    st.download_button(label="⬇️ Download Targeted CV", data=pdf_bytes, file_name=f"Targeted_Medical_Passport.pdf", mime="application/pdf")
+                    st.download_button(label="⬇️ Download Professional PDF", data=pdf_bytes, file_name=f"Medical_Passport_Targeted.pdf", mime="application/pdf")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error compiling PDF: {e}")
             else:
-                st.error("No countries selected.")
+                st.error("Please select at least one jurisdiction.")
 
 # --- 5. AUTHENTICATION ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
-    e, p = st.text_input("Email"), st.text_input("Password", type="password")
+    e, p = st.text_input("Work Email"), st.text_input("Password", type="password")
     c1, c2 = st.columns(2)
     if c1.button("Login"):
         try:
@@ -235,10 +264,10 @@ def login_screen():
             if res.session:
                 st.session_state.authenticated, st.session_state.user_email = True, e
                 st.rerun()
-        except: st.error("Login failed")
+        except: st.error("Login failed. Check email/password.")
     if c2.button("Register"):
         client.auth.sign_up({"email": e, "password": p})
-        st.info("Verification link sent to your email.")
+        st.info("Verification email sent.")
 
 if st.session_state.authenticated:
     main_dashboard()
