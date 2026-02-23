@@ -90,11 +90,15 @@ def main_dashboard():
         st.write(f"**Clinical Responsibility Level:** {tier_data['Responsibilities']}")
         
         if st.button("Update Global Tier on Passport"):
-            client.table("profiles").upsert({
-                "user_email": st.session_state.user_email, 
-                "global_tier": selected_tier
-            }).execute()
-            st.success("Equivalency Applied.")
+            try:
+                # Upsert ensures it creates or updates the user profile
+                client.table("profiles").upsert({
+                    "user_email": st.session_state.user_email, 
+                    "global_tier": selected_tier
+                }, on_conflict="user_email").execute()
+                st.success("Equivalency Applied Successfully.")
+            except Exception as e:
+                st.error(f"Error updating profile: {e}. Did you run the SQL migration?")
 
     # --- TAB 2: ROTATIONS ---
     with tab2:
