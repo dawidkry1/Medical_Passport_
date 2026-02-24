@@ -29,11 +29,11 @@ try:
     KEY = st.secrets["SUPABASE_KEY"]
     client = create_client(URL, KEY)
     
-    # Configure Gemini with the correct technical ID
+    # Configure Gemini
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # FIX: Changed 'gemini-1.5-flash' to the exact string required by the SDK
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Explicitly using the most stable model ID
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
     else:
         st.error("⚠️ GEMINI_API_KEY missing in Secrets tab.")
 except Exception as e:
@@ -78,36 +78,41 @@ def get_raw_text(file):
     except: return ""
 
 def gemini_ai_parse(text):
+    # Forced JSON format prompt
     prompt = f"""
-    You are a medical recruitment expert. Analyze the following Doctor's CV and extract information into a JSON object.
-    Ensure all medical abbreviations are respected (e.g., GMC, SHO, SpR, MRCP).
+    You are a medical consultant. Extract the following Doctor's CV into a JSON object.
+    Ensure that clinical grades (e.g., Resident, Registrar, SHO) and medical bodies (GMC, board) are correctly bucketed.
     
-    Structure the JSON exactly like this:
-    - "rotations": [{{"specialty": "", "hospital": "", "dates": "", "description": ""}}]
-    - "procedures": [{{"name": "", "level": "Observed/Supervised/Independent"}}]
-    - "qips": [{{"title": "", "cycle": "Initial/Closed Loop", "outcome": ""}}]
-    - "teaching": [{{"topic": "", "audience": "", "details": ""}}]
-    - "education": [{{"course": "", "hours": "", "year": ""}}]
-    - "publications": [{{"citation": "", "type": "Poster/Journal/Oral"}}]
-    
-    Return ONLY raw JSON. Do not include any markdown formatting or backticks.
-    CV Content: {text}
+    Structure:
+    {{
+    "rotations": [{{"specialty": "", "hospital": "", "dates": "", "description": ""}}],
+    "procedures": [{{"name": "", "level": "Observed/Supervised/Independent"}}],
+    "qips": [{{"title": "", "cycle": "Initial/Closed Loop", "outcome": ""}}],
+    "teaching": [{{"topic": "", "audience": "", "details": ""}}],
+    "education": [{{"course": "", "hours": "", "year": ""}}],
+    "publications": [{{"citation": "", "type": "Poster/Journal/Oral"}}]
+    }}
+
+    Return ONLY raw JSON. No conversational filler.
+    CV Text: {text}
     """
     try:
-        response = model.generate_content(prompt)
-        # Remove any potential markdown formatting from the response
-        text_response = response.text
-        clean_json = re.sub(r'```json|```', '', text_response).strip()
-        return json.loads(clean_json)
+        # Using generation_config to force JSON response
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
     except Exception as e:
-        st.error(f"AI Synthesis failed: {e}")
+        st.error(f"AI API Connection Error: {e}")
+        st.info("Ensure your API Key is active and the model name is correct.")
         return None
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
-        st.write(f"Logged in: **{st.session_state.user_email}**")
+        st.write(f"Doctor: **{st.session_state.user_email}**")
         up_file = st.file_uploader("Upload Medical CV (PDF/DOCX)", type=['pdf', 'docx'])
         if up_file and st.button("🚀 Run Gemini Clinical Scan"):
             with st.spinner("Gemini is categorizing your clinical record..."):
@@ -212,10 +217,11 @@ def main_dashboard():
 
     # 8. EXPORT
     with tabs[7]:
-        st.subheader("International Portfolio Generation")
+        st.subheader("International Portfolio Export")
         st.write("Ready to compile your AI-standardized clinical passport.")
+        export_targets = st.multiselect("Include Equivalency for:", options=list(COUNTRY_KEY_MAP.keys()), default=["United Kingdom"])
         if st.button("🏗️ Build Professional Clinical Passport"):
-            st.info("Compiling global seniority mapping and verified logs...")
+            st.info("Generating global equivalents and clinical verification...")
 
 # --- LOGIN GATE ---
 if not st.session_state.authenticated:
