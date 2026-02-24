@@ -31,16 +31,16 @@ try:
     supabase_client = create_client(URL, KEY)
     
     if "GEMINI_API_KEY" in st.secrets:
-        # Initializing the client with explicit v1 stable endpoint
+        # Force v1 stable
         ai_client = genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
             http_options={'api_version': 'v1'}
         )
         MODEL_ID = "gemini-1.5-flash" 
     else:
-        st.error("⚠️ GEMINI_API_KEY missing in Secrets tab.")
+        st.error("⚠️ GEMINI_API_KEY missing in Secrets.")
 except Exception as e:
-    st.error(f"Configuration Error: {e}")
+    st.error(f"Config Error: {e}")
 
 # --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
@@ -69,28 +69,33 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE PARSER ---
-def get_raw_text(file):
+# --- 4. THE DEEP-CLEAN PARSER ---
+def get_sanitized_text(file):
     try:
-        text = ""
+        raw_text = ""
         if file.name.endswith('.pdf'):
             with pdfplumber.open(file) as pdf:
-                text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+                raw_text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
         elif file.name.endswith('.docx'):
             doc = docx.Document(file)
-            text = "\n".join([p.text for p in doc.paragraphs])
+            raw_text = "\n".join([p.text for p in doc.paragraphs])
         
-        # SANITIZATION: Remove excessive newlines and tabs that break JSON payloads
-        text = re.sub(r'\s+', ' ', text).strip()
-        # LIMIT: Clip text to 10,000 characters to prevent payload overflow
-        return text[:10000] 
-    except: return ""
+        # 1. Remove non-ASCII characters (fixes 400 Payload errors)
+        clean_text = raw_text.encode("ascii", "ignore").decode()
+        # 2. Collapse all whitespace/tabs into single spaces
+        clean_text = re.sub(r'\s+', ' ', clean_text)
+        # 3. Limit to 8,000 chars to stay well within payload limits
+        return clean_text[:8000].strip()
+    except Exception as e:
+        st.error(f"Extraction error: {e}")
+        return ""
 
 def gemini_ai_parse(text):
+    # Ultra-concise prompt to save tokens
     prompt_text = (
-        "Extract medical CV info into JSON. "
+        "Extract doctor's clinical data into JSON. "
         "Keys: rotations, procedures, qips, teaching, education, publications. "
-        f"Data: {text}"
+        f"Text: {text}"
     )
     
     try:
@@ -98,15 +103,16 @@ def gemini_ai_parse(text):
             model=MODEL_ID,
             contents=prompt_text,
             config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                temperature=0.1
             )
         )
         return json.loads(response.text)
     except Exception as e:
         if "400" in str(e):
-            st.error("🚨 Payload Error: The CV text is too complex for the AI to process in one go. I've attempted to clean the text—please try again with a shorter version.")
+            st.error("🚨 Payload Error. The file layout is too dense. Try copy-pasting your CV text into a simple Word doc and uploading that.")
         elif "exhausted" in str(e).lower():
-            st.error("⏳ Quota Exhausted: Please wait 60 seconds.")
+            st.error("⏳ Quota reached. Wait 60s and try again.")
         else:
             st.error(f"AI Synthesis failed: {e}")
         return None
@@ -116,17 +122,17 @@ def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
         st.write(f"Doctor: **{st.session_state.user_email}**")
-        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
-        if up_file and st.button("🚀 Run Gemini Clinical Scan"):
-            with st.spinner("AI is synthesizing clinical history..."):
-                raw_text = get_raw_text(up_file)
-                if raw_text:
-                    parsed = gemini_ai_parse(raw_text)
+        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        if up_file and st.button("🚀 Run Clinical Scan"):
+            with st.spinner("Sanitizing and analyzing clinical record..."):
+                clean_text = get_sanitized_text(up_file)
+                if clean_text:
+                    parsed = gemini_ai_parse(clean_text)
                     if parsed:
                         st.session_state.parsed_data = parsed
                         st.success("Synthesis Complete.")
                 else:
-                    st.error("Text extraction failed.")
+                    st.error("No extractable text found.")
         
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -197,7 +203,7 @@ def main_dashboard():
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Gateway")
+    st.title("🏥 Medical Passport Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")
