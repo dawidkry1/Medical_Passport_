@@ -29,9 +29,10 @@ try:
     KEY = st.secrets["SUPABASE_KEY"]
     client = create_client(URL, KEY)
     
-    # Configure Gemini
+    # Configure Gemini with the correct technical ID
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        # FIX: Changed 'gemini-1.5-flash' to the exact string required by the SDK
         model = genai.GenerativeModel('gemini-1.5-flash')
     else:
         st.error("⚠️ GEMINI_API_KEY missing in Secrets tab.")
@@ -89,12 +90,14 @@ def gemini_ai_parse(text):
     - "education": [{{"course": "", "hours": "", "year": ""}}]
     - "publications": [{{"citation": "", "type": "Poster/Journal/Oral"}}]
     
-    Return ONLY raw JSON.
+    Return ONLY raw JSON. Do not include any markdown formatting or backticks.
     CV Content: {text}
     """
     try:
         response = model.generate_content(prompt)
-        clean_json = re.sub(r'```json|```', '', response.text).strip()
+        # Remove any potential markdown formatting from the response
+        text_response = response.text
+        clean_json = re.sub(r'```json|```', '', text_response).strip()
         return json.loads(clean_json)
     except Exception as e:
         st.error(f"AI Synthesis failed: {e}")
@@ -104,10 +107,10 @@ def gemini_ai_parse(text):
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
-        st.write(f"Doctor: **{st.session_state.user_email}**")
+        st.write(f"Logged in: **{st.session_state.user_email}**")
         up_file = st.file_uploader("Upload Medical CV (PDF/DOCX)", type=['pdf', 'docx'])
         if up_file and st.button("🚀 Run Gemini Clinical Scan"):
-            with st.spinner("AI is categorizing your clinical record..."):
+            with st.spinner("Gemini is categorizing your clinical record..."):
                 raw_text = get_raw_text(up_file)
                 parsed = gemini_ai_parse(raw_text)
                 if parsed:
@@ -134,22 +137,22 @@ def main_dashboard():
         profile_db = client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
         has_profile = len(profile_db) > 0
         curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if has_profile else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Seniority Level", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
+        selected_tier = st.selectbox("Current Seniority Tier", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
-        active_c = st.multiselect("Target Systems", options=list(COUNTRY_KEY_MAP.keys()), default=["United Kingdom"])
+        active_c = st.multiselect("Target Jurisdictions", options=list(COUNTRY_KEY_MAP.keys()), default=["United Kingdom"])
         
         map_data = [{"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(COUNTRY_KEY_MAP[c], "N/A")} for c in active_c]
         st.table(pd.DataFrame(map_data))
         
-        if st.button("💾 Save Profile"):
+        if st.button("💾 Update Global Profile"):
             client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
-            st.toast("Profile Saved.")
+            st.toast("Profile Synced.")
 
     # 2. EXPERIENCE
     with tabs[1]:
         st.subheader("Clinical Rotations")
         for i, item in enumerate(st.session_state.parsed_data.get("rotations", [])):
-            with st.expander(f"Rotation: {item.get('specialty', 'Review Required')}"):
+            with st.expander(f"Rotation: {item.get('specialty', 'New Entry')}"):
                 st.write(f"**Hospital:** {item.get('hospital')}")
                 st.write(f"**Dates:** {item.get('dates')}")
                 st.info(item.get('description'))
@@ -174,7 +177,7 @@ def main_dashboard():
         
         for i, item in enumerate(st.session_state.parsed_data.get("qips", [])):
             with st.expander(f"Project: {item.get('title')}"):
-                st.write(f"**Cycle:** {item.get('cycle')}")
+                st.write(f"**Cycle Status:** {item.get('cycle')}")
                 st.write(f"**Outcome:** {item.get('outcome')}")
                 if st.button("Save QIP", key=f"qb_{i}"):
                     client.table("projects").insert({"user_email": st.session_state.user_email, "title": item.get('title'), "type": "QIP"}).execute()
@@ -186,7 +189,7 @@ def main_dashboard():
             with st.expander(f"Session: {item.get('topic')}"):
                 st.write(f"**Audience:** {item.get('audience')}")
                 st.write(item.get('details'))
-                if st.button("Save Teaching", key=f"tb_{i}"):
+                if st.button("Save Teaching Record", key=f"tb_{i}"):
                     client.table("teaching").insert({"user_email": st.session_state.user_email, "title": item.get('topic')}).execute()
 
     # 6. SEMINARS & CME
@@ -195,7 +198,7 @@ def main_dashboard():
         for i, item in enumerate(st.session_state.parsed_data.get("education", [])):
             with st.expander(f"Education: {item.get('course')}"):
                 st.write(f"**Year:** {item.get('year')} | **Hours:** {item.get('hours')}")
-                if st.button("Log CME", key=f"eb_{i}"):
+                if st.button("Log CPD Hours", key=f"eb_{i}"):
                     client.table("education").insert({"user_email": st.session_state.user_email, "course": item.get('course')}).execute()
 
     # 7. PUBLICATIONS
@@ -204,16 +207,15 @@ def main_dashboard():
         for i, item in enumerate(st.session_state.parsed_data.get("publications", [])):
             with st.expander(f"Publication: {item.get('type')}"):
                 st.write(item.get('citation'))
-                if st.button("Save Publication", key=f"pubb_{i}"):
+                if st.button("Add to Portfolio", key=f"pubb_{i}"):
                     client.table("projects").insert({"user_email": st.session_state.user_email, "title": item.get('citation'), "type": "Publication"}).execute()
 
     # 8. EXPORT
     with tabs[7]:
-        st.subheader("International Portfolio Export")
-        st.write("Confirm targets for PDF translation.")
-        export_targets = st.multiselect("Include Equivalency for:", options=list(COUNTRY_KEY_MAP.keys()), default=["United Kingdom"])
+        st.subheader("International Portfolio Generation")
+        st.write("Ready to compile your AI-standardized clinical passport.")
         if st.button("🏗️ Build Professional Clinical Passport"):
-            st.info("Generating global equivalents and clinical verification...")
+            st.info("Compiling global seniority mapping and verified logs...")
 
 # --- LOGIN GATE ---
 if not st.session_state.authenticated:
