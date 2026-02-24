@@ -20,7 +20,6 @@ except Exception as e:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# Standardized keys: 'Entry', 'Details', 'Category', 'Source'
 if 'portfolio_data' not in st.session_state:
     st.session_state.portfolio_data = {
         "Experience": [],
@@ -39,12 +38,11 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. GLOBAL LOGIC ENGINE ---
+# --- 3. AUTO-DETECTION ENGINE ---
 def auto_populate_cv(text):
-    """Scans CV for clinical markers using a global medical lexicon."""
-    # Patterns for Clinical History
-    exp_pattern = r"\b(SHO|Registrar|Resident|Fellow|Consultant|Intern|Lekarz|Rezydent|Attending|Specialist|HMO|RMO|VMO)\b"
-    hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Trust|Infirmary|Health Service))"
+    """Rule-based extraction for clinical markers."""
+    exp_pattern = r"\b(SHO|Registrar|Resident|Fellow|Consultant|Intern|Lekarz|Rezydent|Attending|Specialist|HMO|RMO)\b"
+    hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Trust|Infirmary))"
     
     found_roles = re.findall(exp_pattern, text, re.IGNORECASE)
     found_hosps = re.findall(hosp_pattern, text)
@@ -57,23 +55,16 @@ def auto_populate_cv(text):
             "Source": "Auto-Detected"
         })
 
-    # Patterns for Procedures & Academics
-    proc_list = ["Intubation", "Cannulation", "Lumbar Puncture", "Central Line", "Chest Drain", "Suturing", "Ventilation"]
+    proc_list = ["Intubation", "Cannulation", "Lumbar Puncture", "Central Line", "Chest Drain", "Suturing"]
     for p in proc_list:
         if p.lower() in text.lower():
             st.session_state.portfolio_data["Procedures"].append({
-                "Entry": p, 
-                "Details": "Level 3 (Competent)",
-                "Category": "Skill",
-                "Source": "Auto-Detected"
+                "Entry": p, "Details": "Level 3 (Competent)", "Category": "Skill", "Source": "Auto"
             })
 
-    if any(x in text.lower() for x in ["audit", "qip", "research", "teaching", "publication"]):
+    if any(x in text.lower() for x in ["audit", "qip", "research", "teaching"]):
         st.session_state.portfolio_data["Academic"].append({
-            "Entry": "Portfolio Evidence", 
-            "Details": "Detected Academic Activity", 
-            "Category": "Academic",
-            "Source": "Auto-Detected"
+            "Entry": "Portfolio Evidence", "Details": "Identified in CV", "Category": "Academic", "Source": "Auto"
         })
 
 def get_raw_text(file):
@@ -89,13 +80,13 @@ def get_raw_text(file):
 # --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Clinical Passport")
-        up_file = st.file_uploader("Upload CV (Standard PDF/Word)", type=['pdf', 'docx'])
+        st.header("🛂 Portfolio Sync")
+        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
         if up_file:
             raw_txt = get_raw_text(up_file)
-            if raw_txt and st.button("🚀 Sync Global Portfolio"):
+            if raw_txt and st.button("🚀 Sync All Categories"):
                 auto_populate_cv(raw_txt)
-                st.success("Global scan complete.")
+                st.success("CV Data Parsed.")
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -104,43 +95,80 @@ def main_dashboard():
 
     st.title("🩺 Global Medical Passport")
     
-    tabs = st.tabs(["🌐 Global Equivalency", "🏥 Clinical Exp", "💉 Procedures", "🔬 Academic/QIP", "📄 Export CV"])
+    tabs = st.tabs(["🌐 Dynamic Equivalency", "🏥 Experience", "💉 Procedures", "🔬 Academic/QIP", "📄 Export"])
 
-    # TAB 1: GLOBAL EQUIVALENCY
+    # TAB 1: DYNAMIC EQUIVALENCY
     with tabs[0]:
-        st.subheader("Major Healthcare System Comparison")
+        st.subheader("Jurisdictional Seniority Engine")
         
-        st.write("Translate your current seniority across the world's primary medical boards.")
         
-        # Expanded Global Matrix
-        global_mapping = {
-            "Global Tier": ["Intern Level", "Junior Doctor / SHO", "Specialty Training / Reg", "Senior / Specialist"],
-            "UK (GMC)": ["FY1", "FY2 / SHO", "Registrar (ST3-ST8)", "Consultant"],
-            "USA (ACGME)": ["Intern (PGY1)", "Resident (PGY2-3)", "Fellow", "Attending"],
-            "Australia (AMC)": ["Intern", "RMO / HMO", "Registrar", "Consultant / VMO"],
-            "Poland (NIL)": ["Stażysta", "Rezydent (Junior)", "Rezydent (Senior)", "Specjalista"],
-            "Middle East (DHA/MOH)": ["Intern", "GP / Resident", "Registrar", "Consultant"],
-            "Canada (RCPSC)": ["Intern", "Resident", "Senior Resident", "Staff Physician"]
+        # 1. Choose Countries
+        available_countries = ["UK (GMC)", "USA (ACGME)", "Australia (AMC)", "Poland (NIL)", "Middle East (DHA)", "Canada (RCPSC)"]
+        selected_countries = st.multiselect("Select Countries to Compare:", available_countries, default=["UK (GMC)", "Poland (NIL)"])
+        
+        # 2. Choose Grade
+        tier_options = ["Intern / Stażysta", "Junior Doctor (SHO / Rezydent)", "Specialty Trainee (Registrar)", "Senior (Consultant / Specjalista)"]
+        my_grade = st.selectbox("Select Your Current Grade:", tier_options)
+        
+        # Mapping Data
+        master_mapping = {
+            "Intern / Stażysta": {
+                "UK (GMC)": "Foundation Year 1 (FY1)",
+                "USA (ACGME)": "Intern (PGY-1)",
+                "Australia (AMC)": "Intern",
+                "Poland (NIL)": "Stażysta",
+                "Middle East (DHA)": "Intern",
+                "Canada (RCPSC)": "Junior Resident"
+            },
+            "Junior Doctor (SHO / Rezydent)": {
+                "UK (GMC)": "FY2 / SHO",
+                "USA (ACGME)": "Resident (PGY-2)",
+                "Australia (AMC)": "RMO / HMO",
+                "Poland (NIL)": "Rezydent (Młodszy)",
+                "Middle East (DHA)": "Resident / GP",
+                "Canada (RCPSC)": "Resident (PGY-2)"
+            },
+            "Specialty Trainee (Registrar)": {
+                "UK (GMC)": "Registrar (ST3+)",
+                "USA (ACGME)": "Senior Resident / Fellow",
+                "Australia (AMC)": "Registrar",
+                "Poland (NIL)": "Rezydent (Starszy)",
+                "Middle East (DHA)": "Registrar",
+                "Canada (RCPSC)": "Senior Resident"
+            },
+            "Senior (Consultant / Specjalista)": {
+                "UK (GMC)": "Consultant",
+                "USA (ACGME)": "Attending Physician",
+                "Australia (AMC)": "Consultant / Specialist",
+                "Poland (NIL)": "Specjalista",
+                "Middle East (DHA)": "Consultant",
+                "Canada (RCPSC)": "Staff Physician"
+            }
         }
         
-        df_global = pd.DataFrame(global_mapping)
-        st.table(df_global)
-        st.info("💡 Note: These mappings are based on common registration pathways (e.g., PLAB, USMLE, AMC).")
+        if selected_countries:
+            results = {"Jurisdiction": [], "Equivalent Grade": []}
+            for country in selected_countries:
+                results["Jurisdiction"].append(country)
+                results["Equivalent Grade"].append(master_mapping[my_grade][country])
+            
+            st.table(pd.DataFrame(results))
+            st.success(f"Verified: Your status as a **{my_grade}** translates as shown above.")
+        else:
+            st.warning("Please select at least one country to see the equivalency mapping.")
 
-    # TAB 2: CLINICAL EXPERIENCE
+    # TAB 2: EXPERIENCE (Manual + Auto)
     with tabs[1]:
-        st.subheader("Experience Rotations")
-        with st.expander("➕ Manual Entry"):
+        st.subheader("Clinical Rotations")
+        with st.expander("➕ Add Manual Entry"):
             with st.form("exp_form"):
-                e_role = st.text_input("Job Title")
-                e_hosp = st.text_input("Hospital Name")
-                if st.form_submit_button("Add to Timeline"):
+                e_role = st.text_input("Role")
+                e_hosp = st.text_input("Hospital")
+                if st.form_submit_button("Save"):
                     st.session_state.portfolio_data["Experience"].append({"Entry": e_role, "Details": e_hosp, "Category": "Manual Rotation", "Source": "Manual"})
         
         if st.session_state.portfolio_data["Experience"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Experience"]))
-        else:
-            st.info("No rotations found yet.")
 
     # TAB 3: PROCEDURES
     with tabs[2]:
@@ -150,7 +178,7 @@ def main_dashboard():
             with st.form("proc_form"):
                 p_name = st.text_input("Procedure Name")
                 p_lvl = st.selectbox("Level", ["Level 1 (Observed)", "Level 2 (Supervised)", "Level 3 (Independent)"])
-                if st.form_submit_button("Save Skill"):
+                if st.form_submit_button("Log"):
                     st.session_state.portfolio_data["Procedures"].append({"Entry": p_name, "Details": p_lvl, "Category": "Manual Skill", "Source": "Manual"})
         
         if st.session_state.portfolio_data["Procedures"]:
@@ -158,46 +186,45 @@ def main_dashboard():
 
     # TAB 4: ACADEMIC/QIP
     with tabs[3]:
-        st.subheader("Audits & Teaching")
+        st.subheader("Research & Audits")
         
-        with st.expander("➕ Add Evidence"):
+        with st.expander("➕ Add Academic Activity"):
             with st.form("acad_form"):
-                a_type = st.selectbox("Category", ["Audit/QIP", "Research", "Teaching", "Publication"])
-                a_title = st.text_input("Title/Topic")
-                if st.form_submit_button("Add Academic"):
+                a_type = st.selectbox("Type", ["Audit/QIP", "Research", "Teaching", "Publication"])
+                a_title = st.text_input("Title/Description")
+                if st.form_submit_button("Add to Passport"):
                     st.session_state.portfolio_data["Academic"].append({"Entry": a_type, "Details": a_title, "Category": "Manual Academic", "Source": "Manual"})
         
         if st.session_state.portfolio_data["Academic"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Academic"]))
 
-    # TAB 5: EXPORT CV
+    # TAB 5: EXPORT
     with tabs[4]:
-        st.subheader("Custom Jurisdictional Export")
-        st.write("Select which international standards to verify against in your final PDF summary:")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ex_uk = st.checkbox("UK (GMC Standards)", value=True)
-            ex_us = st.checkbox("USA (ACGME Standards)")
-        with col2:
-            ex_au = st.checkbox("Australia (AMC Standards)")
-            ex_pl = st.checkbox("Poland (NIL Standards)")
-        with col3:
-            ex_me = st.checkbox("Middle East (DHA/MOH Standards)")
-            ex_ca = st.checkbox("Canada (RCPSC Standards)")
-
-        if st.button("🛠️ Generate Final Medical Passport"):
+        st.subheader("Generate Tailored CV Summary")
+        st.write("The exported file will include equivalency statements for:")
+        for c in selected_countries:
+            st.write(f"✅ {c}")
+            
+        if st.button("🛠️ Export Final Passport"):
             all_data = []
             for cat in st.session_state.portfolio_data.values():
                 all_data.extend(cat)
             
             if all_data:
-                df_final = pd.DataFrame(all_data)
-                csv = df_final.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Passport (CSV Format)", data=csv, file_name="Global_Medical_Passport.csv")
-                st.success("CV successfully tailored to selected jurisdictions.")
+                # Add the selected equivalencies to the export data
+                for country in selected_countries:
+                    all_data.append({
+                        "Entry": f"{country} Equivalency", 
+                        "Details": master_mapping[my_grade][country], 
+                        "Category": "Jurisdictional Statement", 
+                        "Source": "System Calculated"
+                    })
+                
+                df_export = pd.DataFrame(all_data)
+                csv = df_export.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Tailored CV (CSV)", data=csv, file_name="Tailored_Medical_Passport.csv")
             else:
-                st.error("Portfolio is empty. Upload a CV or add data manually.")
+                st.error("No clinical data to export.")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
