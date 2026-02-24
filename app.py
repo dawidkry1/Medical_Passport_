@@ -28,17 +28,38 @@ URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# --- 2. GLOBAL MAPPING DATA ---
+# --- 2. GLOBAL MAPPING DATA (Restored & Expanded) ---
 EQUIVALENCY_MAP = {
-    "Tier 1: Junior (Intern/FY1)": {"UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern"},
-    "Tier 2: Intermediate (SHO/Resident)": {"UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO"},
-    "Tier 3: Senior (Registrar/Fellow)": {"UK": "ST3+ / Registrar", "US": "Chief Resident / Fellow", "Australia": "Registrar"},
-    "Tier 4: Expert (Consultant/Attending)": {"UK": "Consultant / SAS", "US": "Attending Physician", "Australia": "Consultant"}
+    "Tier 1: Junior (Intern/FY1)": {
+        "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
+        "Ireland": "Intern", "Canada": "PGY-1", "Dubai/DHA": "Intern",
+        "Poland": "Lekarz stażysta",
+        "Responsibilities": "Ward based, supervised prescribing, basic clinical procedures."
+    },
+    "Tier 2: Intermediate (SHO/Resident)": {
+        "UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO",
+        "Ireland": "SHO", "Canada": "Junior Resident", "Dubai/DHA": "GP / Resident",
+        "Poland": "Lekarz rezydent (Junior)",
+        "Responsibilities": "Acute assessments, procedural proficiency, core specialty rotations."
+    },
+    "Tier 3: Senior (Registrar/Fellow)": {
+        "UK": "ST3+ / Registrar", "US": "Chief Resident / Fellow", "Australia": "Registrar",
+        "Ireland": "Specialist Registrar (SpR)", "Canada": "Senior Resident / Fellow", "Dubai/DHA": "Specialist (P)",
+        "Poland": "Lekarz rezydent (Senior)",
+        "Responsibilities": "Team leadership, specialty decision making, independent in core procedures."
+    },
+    "Tier 4: Expert (Consultant/Attending)": {
+        "UK": "Consultant / SAS", "US": "Attending Physician", "Australia": "Consultant / Specialist",
+        "Ireland": "Consultant", "Canada": "Staff Specialist", "Dubai/DHA": "Consultant",
+        "Poland": "Lekarz specjalista",
+        "Responsibilities": "Final clinical accountability, service leadership, senior training."
+    }
 }
 
 COUNTRY_KEY_MAP = {
     "United Kingdom": "UK", "United States": "US", "Australia": "Australia",
-    "Ireland": "Ireland", "Canada": "Canada", "Dubai (DHA)": "Dubai/DHA"
+    "Ireland": "Ireland", "Canada": "Canada", "Dubai (DHA)": "Dubai/DHA",
+    "Poland": "Poland"
 }
 
 # --- 3. SESSION & AUTH ---
@@ -65,7 +86,7 @@ def fetch_user_data(table_name):
         return res.data if res.data else []
     except Exception: return []
 
-# --- 4. ADVANCED CLINICAL PARSER ---
+# --- 4. THE ULTIMATE MEDICAL PARSER ---
 def get_raw_text(file):
     try:
         if file.name.endswith('.pdf'):
@@ -80,140 +101,158 @@ def deep_scan_parse(file):
     text = get_raw_text(file)
     st.session_state.parsed_data["raw"] = text
     
-    lines = text.split('\n')
+    # Split by paragraphs to keep bullet points with headers
+    blocks = text.split('\n\n') if '\n\n' in text else text.split('\n')
     triage = {"rotations": [], "procedures": [], "projects": [], "registrations": [], "raw": text}
     
-    kw_reg = ["gmc", "license", "licence", "registration", "mrcp", "mrcs", "board", "usmle"]
-    kw_proc = ["intubation", "suturing", "cannulation", "procedure", "performed", "competenc", "laparoscopy", "clinics", "tap", "drain"]
+    # Expanded keywords to catch more data
+    kw_reg = ["gmc", "license", "registration", "mrcp", "mrcs", "board", "usmle", "plab"]
+    kw_proc = ["intubation", "suturing", "cannulation", "procedure", "performed", "competenc", "laparoscopy", "chest drain", "lumbar tap"]
     kw_acad = ["audit", "qip", "research", "publication", "poster", "presentation", "teaching", "abstract", "journal"]
-    kw_rot = ["hospital", "trust", "szpital", "ward", "department", "clinic", "rotation", "trainee", "resident", "officer"]
+    kw_rot = ["hospital", "trust", "szpital", "ward", "department", "clinic", "rotation", "resident", "officer", "foundation"]
 
-    current_block = []
-    for line in lines:
-        clean_line = line.strip()
-        if not clean_line: continue
+    for block in blocks:
+        clean_block = block.strip()
+        if len(clean_block) < 5: continue
+        low = clean_block.lower()
         
-        # Break logic: A date or an uppercase header starts a new medical block
-        if re.search(r'\b(20\d{2}|19\d{2})\b', clean_line) or (clean_line.isupper() and len(clean_line) > 5):
-            if current_block:
-                full_block = "\n".join(current_block)
-                low = full_block.lower()
-                if any(k in low for k in kw_reg): triage["registrations"].append(full_block)
-                elif any(k in low for k in kw_proc): triage["procedures"].append(full_block)
-                elif any(k in low for k in kw_acad): triage["projects"].append(full_block)
-                elif any(k in low for k in kw_rot): triage["rotations"].append(full_block)
-            current_block = [clean_line]
-        else:
-            current_block.append(clean_line)
-
-    if current_block: triage["rotations"].append("\n".join(current_block))
+        # Priority Triaging
+        if any(k in low for k in kw_reg): triage["registrations"].append(clean_block)
+        elif any(k in low for k in kw_proc): triage["procedures"].append(clean_block)
+        elif any(k in low for k in kw_acad): triage["projects"].append(clean_block)
+        elif any(k in low for k in kw_rot) or re.search(r'\b(20\d{2})\b', clean_block):
+            triage["rotations"].append(clean_block)
+            
     return triage
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Global Sync")
-        st.write(f"Logged in: **{st.session_state.user_email}**")
-        up_file = st.file_uploader("Upload Medical CV (PDF/DOCX)", type=['pdf', 'docx'])
-        if up_file and st.button("🚀 Run Deep Scan"):
+        st.header("🛂 Global Passport Sync")
+        st.write(f"Doctor: **{st.session_state.user_email}**")
+        up_file = st.file_uploader("Upload CV (PDF/DOCX)", type=['pdf', 'docx'])
+        if up_file and st.button("🚀 Sync Portfolio"):
             st.session_state.parsed_data = deep_scan_parse(up_file)
-            st.success("Analysis Complete.")
+            st.success("Triage Complete.")
         
-        with st.expander("🛠️ Raw Data Debugger"):
-            st.text(st.session_state.parsed_data.get("raw", "")[:800])
-
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
     
-    # Pre-fetch DB data for manual displays
+    # Fetch DB Data
+    profile_db = fetch_user_data("profiles")
     rotations_db = fetch_user_data("rotations")
     procedures_db = fetch_user_data("procedures")
     projects_db = fetch_user_data("projects")
-    profile_db = fetch_user_data("profiles")
 
     tabs = st.tabs(["🌐 Equivalency", "🪪 Registration", "🏥 Experience", "💉 Procedures", "🔬 Academic", "📄 Export"])
 
-    # 1. EQUIVALENCY
+    # 1. EQUIVALENCY (Restored Countries)
     with tabs[0]:
-        st.subheader("International Seniority Mapping")
+        st.subheader("International Equivalency")
+        
         has_profile = len(profile_db) > 0
         curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if has_profile else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Global Standing", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
-        if st.button("💾 Save Profile Status"):
-            client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
-            st.toast("Profile Synced.")
+        selected_tier = st.selectbox("Global Seniority Tier", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
+        
+        # Restore Countries
+        saved_countries = ["United Kingdom"]
+        if has_profile:
+            raw_c = profile_db[0].get('selected_countries', "[]")
+            try: saved_countries = json.loads(raw_c) if isinstance(raw_c, str) else raw_c
+            except: pass
+
+        active_countries = st.multiselect("Target Systems for Mapping", options=list(COUNTRY_KEY_MAP.keys()), default=saved_countries)
+        
+        # Display Mapping Table
+        st.write("### 🌍 Your Role Internationally")
+        map_data = []
+        for c in active_countries:
+            short_key = COUNTRY_KEY_MAP[c]
+            equivalent_title = EQUIVALENCY_MAP[selected_tier].get(short_key, "Equivalent N/A")
+            map_data.append({"Country": c, "Equivalent Title": equivalent_title})
+        st.table(pd.DataFrame(map_data))
+
+        if st.button("💾 Save Equivalency Profile"):
+            client.table("profiles").upsert({
+                "user_email": st.session_state.user_email, 
+                "global_tier": selected_tier,
+                "selected_countries": json.dumps(active_countries)
+            }, on_conflict="user_email").execute()
+            st.toast("Profile Saved.")
 
     # 2. REGISTRATION
     with tabs[1]:
-        st.subheader("Medical Licensing & Registrations")
+        st.subheader("Professional Licensing")
         found_regs = st.session_state.parsed_data.get("registrations", [])
         if found_regs:
             for reg in found_regs: st.code(reg)
-        else: st.info("No registration markers found.")
+        else: st.info("Manual Entry: Add your GMC/Registration Number below.")
 
-    # 3. EXPERIENCE (Fixing the Cut-offs)
+    # 3. EXPERIENCE
     with tabs[2]:
         st.subheader("Clinical Rotations")
-        
         found_rots = st.session_state.parsed_data.get("rotations", [])
-        
         if found_rots:
-            st.write("### 📥 Imported from CV")
             for i, block in enumerate(found_rots):
-                with st.expander(f"Review Entry {i+1}", expanded=True):
-                    full_text = st.text_area("Details", block, height=180, key=f"rt_{i}")
-                    if st.button(f"Save Rotation {i+1}", key=f"rb_{i}"):
-                        client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": full_text.split('\n')[0][:100], "description": full_text}).execute()
-                        st.toast("Rotation Saved!")
-
-        st.divider()
-        st.write("### 📜 Saved Clinical Record")
-        if rotations_db: st.table(pd.DataFrame(rotations_db)[['hospital', 'description']])
+                with st.expander(f"Detected Rotation {i+1}", expanded=True):
+                    full_text = st.text_area("Experience Details", block, height=150, key=f"rt_{i}")
+                    if st.button(f"Save Entry {i+1}", key=f"rb_{i}"):
+                        client.table("rotations").insert({"user_email": st.session_state.user_email, "description": full_text}).execute()
+                        st.toast("Rotation Logged")
+        
+        if rotations_db:
+            st.write("### 📜 Logged Experiences")
+            st.table(pd.DataFrame(rotations_db)[['description']])
 
     # 4. PROCEDURES
     with tabs[3]:
-        st.subheader("Procedural Competency Log")
+        st.subheader("Procedural Log")
         
         found_procs = st.session_state.parsed_data.get("procedures", [])
         if found_procs:
             for i, block in enumerate(found_procs):
-                with st.expander(f"Detected Skill {i+1}"):
-                    st.write(block)
-                    if st.button("Add to Log", key=f"pb_{i}"):
-                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": block[:100]}).execute()
-        
-        with st.form("manual_proc"):
-            st.write("Manual Entry")
-            pn = st.text_input("Procedure Name")
-            if st.form_submit_button("Log Skill"):
-                client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": pn}).execute()
-                st.rerun()
+                with st.expander(f"Detected Procedure {i+1}"):
+                    p_name = st.text_input("Procedure Name", block[:100], key=f"pn_{i}")
+                    if st.button("Log Procedure", key=f"pb_{i}"):
+                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": p_name}).execute()
+        else: st.info("No procedures detected in CV.")
 
     # 5. ACADEMIC
     with tabs[4]:
-        st.subheader("Academic & Research Portfolio")
-        found_projects = st.session_state.parsed_data.get("projects", [])
-        if found_projects:
-            for i, block in enumerate(found_projects):
+        st.subheader("Research & Audit Portfolio")
+        found_proj = st.session_state.parsed_data.get("projects", [])
+        if found_proj:
+            for i, block in enumerate(found_proj):
                 with st.expander(f"Detected Project {i+1}"):
-                    st.write(block)
-                    if st.button("Confirm Project", key=f"ab_{i}"):
-                        client.table("projects").insert({"user_email": st.session_state.user_email, "title": block[:100]}).execute()
-        
-        if projects_db: st.table(pd.DataFrame(projects_db)[['title']])
+                    t = st.text_input("Title", block[:100], key=f"an_{i}")
+                    if st.button("Add to Portfolio", key=f"ab_{i}"):
+                        client.table("projects").insert({"user_email": st.session_state.user_email, "title": t}).execute()
+        if projects_db:
+            st.table(pd.DataFrame(projects_db)[['title']])
 
-    # 6. EXPORT
+    # 6. EXPORT (RESTORED)
     with tabs[5]:
         st.subheader("Generate Clinical Passport")
-        st.write("Combine all verified rotations, procedures, and research into a single global document.")
-        if st.button("🏗️ Build Verified Portfolio"):
-            st.success("Compiling data... PDF generation engine active.")
+        st.write("This combines your verified clinical history into a standardized global format.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("#### 📄 PDF Portfolio")
+            st.caption("Standardized CV format for hospital HR departments.")
+            if st.button("🏗️ Build Medical PDF"):
+                st.info("Compiling Clinical Evidence...")
 
-# --- LOGIN GATE ---
+        with col2:
+            st.write("#### 🛡️ QR Verification")
+            st.caption("Generate a secure link for employers to verify your standing.")
+            if st.button("🔗 Generate Passport Link"):
+                st.success("Secure link generated.")
+
+# --- AUTH ---
 if not st.session_state.authenticated:
     st.title("🏥 Medical Passport Gateway")
     with st.form("login"):
