@@ -3,7 +3,12 @@ import pandas as pd
 from supabase import create_client
 from google import genai
 from google.genai import types
+import pdfplumber
+import docx
 import json
+import io
+import re
+import time
 
 # --- 1. CORE CONFIG ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
@@ -33,11 +38,11 @@ try:
         )
         MODEL_ID = "gemini-1.5-flash" 
     else:
-        st.error("⚠️ GEMINI_API_KEY missing.")
+        st.error("⚠️ GEMINI_API_KEY missing in Secrets.")
 except Exception as e:
-    st.error(f"Config Error: {e}")
+    st.error(f"Configuration Error: {e}")
 
-# --- 2. DATA MAPPING ---
+# --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {"UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern", "Poland": "Lekarz stażysta"},
     "Tier 2: Intermediate (SHO/Resident)": {"UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO", "Poland": "Lekarz rezydent (Junior)"},
@@ -50,8 +55,11 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
-if 'temp_parsed' not in st.session_state:
-    st.session_state.temp_parsed = None
+if 'parsed_data' not in st.session_state:
+    st.session_state.parsed_data = {
+        "rotations": [], "procedures": [], "qips": [], 
+        "teaching": [], "education": [], "publications": []
+    }
 
 def handle_login():
     try:
@@ -62,9 +70,27 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE SECTIONAL PARSER ---
-def parse_cv_snippet(snippet_text):
-    prompt = f"Convert this medical CV snippet into a JSON list of objects. Use relevant keys like 'specialty', 'hospital', 'procedure', 'level', or 'title'. Data: {snippet_text}"
+# --- 4. THE AUTOMATED CHUNKING ENGINE ---
+def get_raw_text(file):
+    try:
+        text = ""
+        if file.name.endswith('.pdf'):
+            with pdfplumber.open(file) as pdf:
+                text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+        elif file.name.endswith('.docx'):
+            doc = docx.Document(file)
+            text = "\n".join([p.text for p in doc.paragraphs])
+        # Clean non-essential symbols
+        return re.sub(r'[^a-zA-Z0-9\s\.,\-\(\):/]', '', text)
+    except: return ""
+
+def process_chunk(chunk_text):
+    """Processes a single 2000-char block of the CV."""
+    prompt = (
+        "Extract medical career data from this CV fragment into JSON. "
+        "Keys: rotations, procedures, qips, teaching, education, publications. "
+        f"Fragment: {chunk_text}"
+    )
     try:
         response = ai_client.models.generate_content(
             model=MODEL_ID,
@@ -73,36 +99,55 @@ def parse_cv_snippet(snippet_text):
         )
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"AI Error: {e}")
         return None
+
+def run_full_analysis(full_text):
+    # Reset local data
+    combined_results = {k: [] for k in st.session_state.parsed_data.keys()}
+    
+    # Split text into chunks of 2000 chars (approx 400-500 words)
+    chunks = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, chunk in enumerate(chunks):
+        status_text.text(f"Analyzing Clinical Block {idx+1} of {len(chunks)}...")
+        result = process_chunk(chunk)
+        if result:
+            for key in combined_results:
+                if key in result and isinstance(result[key], list):
+                    combined_results[key].extend(result[key])
+        
+        progress_bar.progress((idx + 1) / len(chunks))
+        # Small sleep to respect Free Tier rate limits (RPM)
+        time.sleep(2) 
+        
+    status_text.text("Synthesis Complete!")
+    return combined_results
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Clinical Portfolio")
+        st.header("🛂 Clinical Sync")
         st.write(f"Logged in: **{st.session_state.user_email}**")
         
-        st.divider()
-        st.subheader("🤖 AI Section Assistant")
-        st.caption("Paste a specific section from your CV below (e.g., just your rotations or just your publications) to avoid payload errors.")
-        snippet = st.text_area("Paste CV Snippet here...")
-        if st.button("✨ Parse Snippet"):
-            with st.spinner("Analyzing..."):
-                st.session_state.temp_parsed = parse_cv_snippet(snippet)
+        up_file = st.file_uploader("Upload Full Medical CV", type=['pdf', 'docx'])
+        if up_file and st.button("🚀 Run Multi-Stage Scan"):
+            raw_text = get_raw_text(up_file)
+            if raw_text:
+                final_data = run_full_analysis(raw_text)
+                st.session_state.parsed_data = final_data
+                st.success("Full CV Map Generated.")
         
+        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
     
-    # Show AI Results if available
-    if st.session_state.temp_parsed:
-        with st.expander("📝 AI Extracted Data (Review & Copy)", expanded=True):
-            st.json(st.session_state.temp_parsed)
-            st.info("Copy the details above into the relevant tabs below to save them to your permanent record.")
-
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education"])
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education", "📄 Export"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
@@ -112,68 +157,47 @@ def main_dashboard():
         curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
         selected_tier = st.selectbox("Current Seniority Tier", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
-        target = st.multiselect("Target Jurisdictions", options=["UK", "US", "Australia", "Poland"], default=["UK"])
-        map_data = [{"Country": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in target]
+        active_c = st.multiselect("Target Systems", options=["UK", "US", "Australia", "Poland"], default=["UK"])
+        map_data = [{"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in active_c]
         st.table(pd.DataFrame(map_data))
-        
-        if st.button("💾 Save Grade"):
-            supabase_client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
-            st.toast("Saved.")
 
     # 2. EXPERIENCE
     with tabs[1]:
-        st.subheader("Add Clinical Rotation")
-        with st.form("add_rotation"):
-            col1, col2 = st.columns(2)
-            spec = col1.text_input("Specialty (e.g. Cardiology)")
-            hosp = col2.text_input("Hospital")
-            dates = col1.text_input("Dates (e.g. Aug 2024 - Feb 2025)")
-            desc = st.text_area("Key Responsibilities / Achievements")
-            if st.form_submit_button("💾 Save Rotation"):
-                supabase_client.table("rotations").insert({"user_email": st.session_state.user_email, "description": f"{spec} at {hosp} ({dates}): {desc}"}).execute()
-                st.success("Rotation logged.")
+        st.subheader("Clinical Rotations")
+        for item in st.session_state.parsed_data.get("rotations", []):
+            with st.expander(f"📍 {item.get('specialty', 'Rotation')}"):
+                st.write(f"**Hospital:** {item.get('hospital')}")
+                st.write(f"**Details:** {item.get('description')}")
 
     # 3. PROCEDURES
     with tabs[2]:
-        st.subheader("Procedural Logbook")
+        st.subheader("Logbook")
         
-        with st.form("add_proc"):
-            proc_name = st.text_input("Procedure Name")
-            proc_lvl = st.selectbox("Competency Level", ["Observed", "Supervised", "Independent"])
-            if st.form_submit_button("💉 Log Procedure"):
-                supabase_client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": proc_name, "level": proc_lvl}).execute()
-                st.success("Procedure added.")
+        for item in st.session_state.parsed_data.get("procedures", []):
+            st.write(f"💉 {item.get('procedure', item.get('name', 'N/A'))} — **{item.get('level', 'N/A')}**")
 
     # 4. QIP & AUDIT
     with tabs[3]:
-        st.subheader("Quality Improvement Projects")
+        st.subheader("Quality Improvement")
         
-        with st.form("add_qip"):
-            qip_title = st.text_input("Project Title")
-            qip_cycle = st.selectbox("Cycle Status", ["Initial Audit", "Re-Audit (Closed Loop)", "QIP Phase 1"])
-            if st.form_submit_button("🔬 Save QIP"):
-                supabase_client.table("projects").insert({"user_email": st.session_state.user_email, "title": qip_title, "type": "QIP"}).execute()
-                st.success("QIP logged.")
+        for item in st.session_state.parsed_data.get("qips", []):
+            st.write(f"🔬 **{item.get('title', 'Audit')}**")
 
     # 5. TEACHING
     with tabs[4]:
         st.subheader("Teaching Portfolio")
-        with st.form("add_teach"):
-            t_topic = st.text_input("Topic")
-            t_aud = st.text_input("Audience (e.g. Med Students, Nurses)")
-            if st.form_submit_button("👨‍🏫 Save Teaching"):
-                supabase_client.table("teaching").insert({"user_email": st.session_state.user_email, "title": t_topic}).execute()
-                st.success("Teaching record saved.")
+        for item in st.session_state.parsed_data.get("teaching", []):
+            st.write(f"👨‍🏫 **{item.get('topic', item.get('title', 'N/A'))}**")
 
     # 6. EDUCATION
     with tabs[5]:
         st.subheader("Courses & Seminars")
-        with st.form("add_edu"):
-            e_name = st.text_input("Course/Seminar Name")
-            e_year = st.text_input("Year")
-            if st.form_submit_button("📚 Save Education"):
-                supabase_client.table("education").insert({"user_email": st.session_state.user_email, "course": e_name}).execute()
-                st.success("Education record saved.")
+        for item in st.session_state.parsed_data.get("education", []):
+            st.write(f"📚 {item.get('course', 'Course')} ({item.get('year', 'N/A')})")
+
+    # 7. EXPORT
+    with tabs[6]:
+        st.button("🏗️ Build Professional Passport PDF")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
