@@ -21,6 +21,7 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
+# Connection Setup
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
@@ -79,7 +80,7 @@ def handle_login():
         if res.user:
             st.session_state.authenticated = True
             st.session_state.user_email = st.session_state.login_email
-    except: st.error("Login failed. Check your Supabase credentials.")
+    except: st.error("Login failed. Check your credentials.")
 
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
@@ -92,7 +93,8 @@ def fetch_user_data(table_name):
     try:
         res = client.table(table_name).select("*").eq("user_email", st.session_state.user_email).execute()
         return res.data
-    except: return []
+    except Exception as e:
+        return []
 
 # --- 4. PDF ENGINE ---
 class MedicalCV(FPDF):
@@ -127,11 +129,15 @@ def generate_pdf(email, profile, rotations, procedures, projects, countries):
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
-    col1, col2 = st.columns([0.8, 0.2])
-    col1.title("🩺 Global Medical Passport")
-    if col2.button("Logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.rerun()
+    with st.sidebar:
+        st.write(f"Logged in: **{st.session_state.user_email}**")
+        if st.button("🔄 Reload App"):
+            st.rerun()
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.rerun()
+
+    st.title("🩺 Global Medical Passport")
 
     profile = fetch_user_data("profiles")
     rotations = fetch_user_data("rotations")
@@ -149,12 +155,11 @@ def main_dashboard():
         
         selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         
-        # Load saved countries safely
         raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom", "Poland"]
         if isinstance(raw_c, str):
             try: saved_c = json.loads(raw_c)
             except: saved_c = ["United Kingdom", "Poland"]
-        else: saved_c = raw_c
+        else: saved_c = raw_c if raw_c else ["United Kingdom", "Poland"]
             
         active_countries = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=saved_c)
 
@@ -168,21 +173,28 @@ def main_dashboard():
             st.info(f"**Responsibilities:** {t_data['Responsibilities']}")
 
         if st.button("💾 Save Preferences"):
-            # CRITICAL FIX: Convert list to string to avoid Supabase Type Errors
-            save_data = {
-                "user_email": st.session_state.user_email, 
-                "global_tier": selected_tier, 
-                "selected_countries": json.dumps(active_countries) # Force JSON String
-            }
             try:
-                client.table("profiles").upsert(save_data, on_conflict="user_email").execute()
-                st.success("Preferences Saved!")
-                st.rerun()
+                # Attempt full save first
+                save_payload = {
+                    "user_email": st.session_state.user_email, 
+                    "global_tier": selected_tier, 
+                    "selected_countries": json.dumps(active_countries)
+                }
+                client.table("profiles").upsert(save_payload, on_conflict="user_email").execute()
+                st.success("All Preferences Saved!")
             except Exception as e:
-                st.error(f"Save failed. Error details: {e}")
+                if "selected_countries" in str(e):
+                    st.warning("Country list failed to save (Schema Cache issue). Saving seniority tier only...")
+                    # Fallback: Save without the problematic column
+                    fallback_payload = {"user_email": st.session_state.user_email, "global_tier": selected_tier}
+                    client.table("profiles").upsert(fallback_payload, on_conflict="user_email").execute()
+                    st.success("Seniority Tier Saved. Please restart your Supabase project to fix the country list.")
+                else:
+                    st.error(f"Error: {e}")
 
     with tabs[1]:
         st.subheader("Clinical Experience")
+        
         with st.expander("🪄 Hands-Free: Auto-Fill from Legacy CV"):
             legacy = st.file_uploader("Upload PDF CV", type=['pdf'], key="cv_auto")
             if legacy:
@@ -208,9 +220,9 @@ def main_dashboard():
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
 
-    # (Procedures, Academic, Vault, and Export remain as they were in your functional version)
     with tabs[2]:
         st.subheader("Procedural Log")
+        
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("new_proc"):
             n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent"]), st.number_input("Count", 1)
@@ -233,13 +245,17 @@ def main_dashboard():
         if up and st.button("Upload"):
             client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up.name}", up.getvalue())
             st.success("Saved.")
-        files = client.storage.from_('medical-vault').list(st.session_state.user_email)
-        if files:
-            for f in files:
-                c1, c2 = st.columns([0.8, 0.2])
-                c1.write(f"📄 {f['name']}")
-                res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
-                c2.link_button("View", res['signedURL'])
+        
+        try:
+            files = client.storage.from_('medical-vault').list(st.session_state.user_email)
+            if files:
+                for f in files:
+                    c1, c2 = st.columns([0.8, 0.2])
+                    c1.write(f"📄 {f['name']}")
+                    res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
+                    c2.link_button("View", res['signedURL'])
+        except:
+            st.info("Vault is currently empty.")
 
     with tabs[5]:
         st.subheader("Export PDF")
