@@ -3,6 +3,8 @@ import pandas as pd
 from supabase import create_client
 from fpdf import FPDF
 import pdfplumber
+import docx  # New requirement: python-docx
+python_docx_installed = True
 import json
 import io
 import re
@@ -97,55 +99,60 @@ def fetch_user_data(table_name):
     except Exception:
         return []
 
-# --- 4. BLOCK-BASED MEDICAL PARSER ---
-def deep_parse_medical_cv(pdf_file):
-    with pdfplumber.open(pdf_file) as pdf:
-        text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+# --- 4. ENHANCED MULTI-FORMAT PARSER ---
+def extract_text_from_file(uploaded_file):
+    if uploaded_file.name.endswith('.pdf'):
+        with pdfplumber.open(uploaded_file) as pdf:
+            return "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+    elif uploaded_file.name.endswith('.docx'):
+        doc = docx.Document(uploaded_file)
+        return "\n".join([para.text for para in doc.paragraphs])
+    return ""
+
+def deep_parse_medical_cv(uploaded_file):
+    text = extract_text_from_file(uploaded_file)
     
-    # Identify Blocks by Date Headers (e.g., "Aug 2022 - Aug 2023" or "2021-2022")
-    # This keeps a whole experience block together
-    blocks = re.split(r'(\d{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', text)
+    # regex for dates often used as anchors for "Experience Blocks"
+    date_anchor = r'(\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s\d{4}|\d{2}/\d{2}/\d{4}|\b\d{4}\b)'
+    
+    # Split text into blocks based on date-driven headers
+    parts = re.split(date_anchor, text)
     
     extracted = {"rotations": [], "procedures": [], "projects": [], "registrations": []}
     
+    # Re-assemble fragments into cohesive blocks
     current_block = ""
-    for segment in blocks:
-        if not segment: continue
-        # Reconstruct the block
-        current_block += segment
+    for part in parts:
+        if not part: continue
+        current_block += part
         
-        # If the block looks like a full entry, categorize it
-        if len(current_block) > 50:
-            low_block = current_block.lower()
-            
-            # Registration Check
-            if any(k in low_block for k in ["gmc", "registration", "licence", "license"]):
+        # Once a block reaches a meaningful length, categorize it
+        if len(current_block) > 60:
+            low = current_block.lower()
+            if any(k in low for k in ["gmc", "registration", "mrcp", "mrcs", "licence"]):
                 extracted["registrations"].append(current_block.strip())
-            # Rotation Check (Dates + Hospital Keywords)
-            elif any(k in low_block for k in ["hospital", "trust", "szpital", "clinic", "department"]):
+            elif any(k in low for k in ["hospital", "trust", "szpital", "ward", "clinic"]):
                 extracted["rotations"].append(current_block.strip())
-            # Procedure Check
-            elif any(k in low_block for k in ["procedure", "performed", "intubation", "suturing", "skills"]):
-                extracted["procedures"].append(current_block.strip())
-            # Academic Check
-            elif any(k in low_block for k in ["audit", "qip", "research", "published"]):
+            elif any(k in low for k in ["audit", "qip", "research", "publication"]):
                 extracted["projects"].append(current_block.strip())
-            
-            current_block = "" # Reset for next block
-            
+            elif any(k in low for k in ["intubation", "procedure", "competency", "logbook"]):
+                extracted["procedures"].append(current_block.strip())
+            current_block = ""
+
     return extracted
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.success(f"Verified: {st.session_state.user_email}")
+        st.success(f"Verified Clinician: {st.session_state.user_email}")
         st.divider()
-        st.write("### 📂 Global CV Importer")
-        uploaded_cv = st.file_uploader("Upload Medical CV (PDF)", type=['pdf'])
-        if uploaded_cv and st.button("🚀 Auto-Populate All Tabs"):
-            with st.spinner("Analyzing Medical Experience..."):
+        st.write("### 📂 Global Importer")
+        st.caption("Upload PDF or DOCX to auto-populate the passport.")
+        uploaded_cv = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        if uploaded_cv and st.button("🚀 Analyze & Sync All Tabs"):
+            with st.spinner("Processing Professional Portfolio..."):
                 st.session_state.parsed_data = deep_parse_medical_cv(uploaded_cv)
-                st.success("Analysis Complete! Review each tab.")
+                st.success("Analysis Complete! Please review tabs.")
 
         if st.button("🚪 Logout", use_container_width=True):
             client.auth.sign_out()
@@ -168,7 +175,7 @@ def main_dashboard():
         curr_tier = profile[0]['global_tier'] if profile else "Tier 1: Junior (Intern/FY1)"
         selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom"]
-        active_countries = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=raw_c if isinstance(raw_c, list) else json.loads(raw_c))
+        active_countries = st.multiselect("Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=raw_c if isinstance(raw_c, list) else json.loads(raw_c))
         if st.button("💾 Save Preferences"):
             client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier, "selected_countries": json.dumps(active_countries)}, on_conflict="user_email").execute()
             st.success("Preferences Saved.")
@@ -177,45 +184,39 @@ def main_dashboard():
     with tabs[1]:
         st.subheader("Professional Registration")
         if st.session_state.parsed_data["registrations"]:
-            st.info("Information found in CV:")
             for reg in st.session_state.parsed_data["registrations"]:
-                st.write(f"🔍 {reg}")
+                with st.expander("🔍 Detected Registration Info", expanded=True):
+                    st.write(reg)
         
         with st.form("reg_entry"):
             body, num = st.text_input("Licensing Body"), st.text_input("Registration Number")
             if st.form_submit_button("Save to Portfolio"):
                 st.success("Registration stored.")
 
-    # 🏥 ROTATIONS (Clinical Experience)
+    # 🏥 ROTATIONS
     with tabs[2]:
-        st.subheader("Clinical Rotations")
+        st.subheader("Clinical Rotations (Experience)")
         
-        # Detected Blocks
         if st.session_state.parsed_data["rotations"]:
-            st.write("### 📝 Detected Experiences (Verify to Save)")
+            st.write("### 📝 Drafted Experiences")
             for i, block in enumerate(st.session_state.parsed_data["rotations"]):
-                with st.expander(f"Entry {i+1}: {block[:50]}...", expanded=True):
-                    # Clean the block into specific fields
-                    h_guess = block.split('\n')[0] # Usually the first line is hospital/role
-                    full_desc = st.text_area("Full Experience Details", block, key=f"rot_area_{i}", height=150)
-                    c1, c2 = st.columns(2)
-                    spec = c1.text_input("Specialty", "Identify...", key=f"rot_spec_{i}")
-                    grade = c2.text_input("Grade", "Identify...", key=f"rot_grade_{i}")
-                    if st.button(f"✅ Save Entire Experience {i+1}", key=f"rot_save_{i}"):
+                with st.expander(f"Review Entry {i+1}", expanded=True):
+                    full_desc = st.text_area("Experience Details", block, key=f"rot_area_{i}", height=180)
+                    c1, c2, c3 = st.columns(3)
+                    h = c1.text_input("Hospital", block.split('\n')[0][:50], key=f"rot_h_{i}")
+                    s = c2.text_input("Specialty", key=f"rot_s_{i}")
+                    g = c3.text_input("Grade", key=f"rot_g_{i}")
+                    if st.button(f"Save Experience {i+1}", key=f"rot_save_{i}"):
                         client.table("rotations").insert({
                             "user_email": st.session_state.user_email,
-                            "hospital": h_guess,
-                            "specialty": spec,
-                            "grade": grade,
-                            "dates": "See Details",
-                            "description": full_desc # Assuming you added this column to your DB
+                            "hospital": h, "specialty": s, "grade": g, "description": full_desc
                         }).execute()
-                        st.toast("Full Experience Logged!")
+                        st.toast("Full Block Logged")
 
-        # Manual Entry
         with st.form("man_rot"):
-            st.write("### Add Manual Experience")
-            h, s, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Grade")
+            st.write("### Manual Entry")
+            c1, c2, c3 = st.columns(3)
+            h, s, g = c1.text_input("Hospital"), c2.text_input("Specialty"), c3.text_input("Grade")
             if st.form_submit_button("Add Manually"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "grade": g}).execute()
                 st.rerun()
@@ -225,45 +226,37 @@ def main_dashboard():
     with tabs[3]:
         st.subheader("Procedural Skills")
         if st.session_state.parsed_data["procedures"]:
-            st.write("### 💉 Detected Procedures")
             for i, block in enumerate(st.session_state.parsed_data["procedures"]):
-                with st.expander(f"Procedure Block {i+1}"):
-                    p_text = st.text_area("Skill Details", block, key=f"proc_area_{i}")
-                    if st.button("Log this Skill", key=f"proc_save_{i}"):
-                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": p_text[:50], "level": "Independent", "count": 1}).execute()
-                        st.toast("Skill Logged")
+                with st.expander(f"Detected Procedure {i+1}"):
+                    p_text = st.text_area("Details", block, key=f"proc_area_{i}")
+                    if st.button("Log Procedure", key=f"proc_save_{i}"):
+                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": p_text[:50], "level": "Independent"}).execute()
+                        st.toast("Logged")
 
         with st.form("man_proc"):
-            n, l = st.text_input("Procedure Name"), st.selectbox("Level", ["Observed", "Supervised", "Independent"])
+            n, l = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent"])
             if st.form_submit_button("Add Skill"):
-                client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": 1}).execute()
+                client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l}).execute()
                 st.rerun()
-        if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
 
     # 🔬 ACADEMIC
     with tabs[4]:
         st.subheader("Academic & QIP")
         if st.session_state.parsed_data["projects"]:
-            st.write("### 🔬 Detected Academic Work")
             for i, block in enumerate(st.session_state.parsed_data["projects"]):
                 with st.expander(f"Project {i+1}"):
                     st.write(block)
                     if st.button("Save Project", key=f"acad_save_{i}"):
-                        client.table("projects").insert({"user_email": st.session_state.user_email, "type": "Research", "title": block[:100]}).execute()
-                        st.toast("Project Saved")
-
-        with st.form("man_acad"):
-            t, title = st.selectbox("Type", ["Audit", "QIP", "Research"]), st.text_input("Title")
-            if st.form_submit_button("Save Manual Project"):
-                client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title}).execute()
-                st.rerun()
+                        client.table("projects").insert({"user_email": st.session_state.user_email, "title": block[:100]}).execute()
+                        st.toast("Saved")
+        
         if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
 
     # 🛡️ VAULT
     with tabs[5]:
         st.subheader("🛡️ Secured Document Vault")
-        up = st.file_uploader("Upload Credentials", type=['pdf', 'jpg', 'png'])
-        if up and st.button("Upload"):
+        up = st.file_uploader("Upload", type=['pdf', 'jpg', 'png'])
+        if up and st.button("Store File"):
             client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up.name}", up.getvalue())
             st.success("Stored.")
         try:
@@ -279,8 +272,7 @@ def main_dashboard():
     with tabs[6]:
         st.subheader("Export Portfolio")
         if st.button("🏗️ Compile Professional PDF"):
-            # generate_pdf logic here (keeping existing function)
-            st.info("PDF Generation in progress...")
+            st.info("Compiling Clinical Portfolio...")
 
 # --- LOGIN GATE ---
 if not st.session_state.authenticated:
