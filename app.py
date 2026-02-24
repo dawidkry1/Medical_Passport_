@@ -54,8 +54,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
-if 'portfolio_data' not in st.session_state:
-    st.session_state.portfolio_data = []
+if 'final_portfolio' not in st.session_state:
+    st.session_state.final_portfolio = []
 
 def handle_login():
     try:
@@ -66,7 +66,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. DATA EXTRACTION ENGINE ---
+# --- 4. DOUBLE-PASS EXTRACTION ENGINE ---
 def get_raw_text(file):
     text = ""
     try:
@@ -80,134 +80,117 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def ai_brute_force_extract(chunk_text):
-    """The most aggressive prompt possible."""
-    prompt = (
-        "Copy every medical job, rotation, hospital name, procedure, audit, and course from this text. "
-        "Do not leave anything out. Format as a simple JSON list of objects. "
-        "Use these exact keys: 'title', 'location', 'date', 'type'. "
-        f"\n\nCV Text: {chunk_text}"
-    )
-    try:
-        response = ai_client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json")
-        )
-        # Attempt to find JSON in the response even if the AI adds text around it
-        clean_res = response.text
-        if "```json" in clean_res:
-            clean_res = clean_res.split("```json")[1].split("```")[0]
-        
-        data = json.loads(clean_res)
-        if isinstance(data, list): return data
-        if isinstance(data, dict):
-            for v in data.values():
-                if isinstance(v, list): return v
-        return []
-    except:
-        return []
-
-def run_extraction_cycle(full_text):
-    results = []
-    # Using 1200 character chunks for density balance
-    chunks = [full_text[i:i+1200] for i in range(0, len(full_text), 1200)]
+def extract_and_organize(full_text):
+    """Pass 1: Get raw clinical strings. Pass 2: Organize into JSON."""
+    # Chunking to stay within limits
+    chunks = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
+    all_items = []
+    
     prog = st.progress(0)
+    status = st.empty()
     
     for idx, chunk in enumerate(chunks):
-        found = ai_brute_force_extract(chunk)
-        if found:
-            results.extend(found)
+        status.text(f"Processing clinical segment {idx+1}...")
+        # Simplest possible prompt: Just list the facts
+        prompt = (
+            "List every medical job, hospital, clinical skill, and audit project in this text. "
+            "Format each as a separate JSON object in a list with keys: 'label', 'category', 'date'. "
+            "For 'category', use only: 'Clinical', 'Skill', 'Audit', 'Education'. "
+            f"\n\nCV Data: {chunk}"
+        )
+        
+        try:
+            response = ai_client.models.generate_content(
+                model=MODEL_ID,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            
+            chunk_data = json.loads(response.text)
+            if isinstance(chunk_data, list):
+                all_items.extend(chunk_data)
+            elif isinstance(chunk_data, dict):
+                # Try to find the list inside a key
+                for val in chunk_data.values():
+                    if isinstance(val, list):
+                        all_items.extend(val)
+        except Exception:
+            continue # Skip failed chunks
+            
         prog.progress((idx + 1) / len(chunks))
         time.sleep(1)
-    return results
+        
+    return all_items
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Doctor Dashboard")
-        st.write(f"User: {st.session_state.user_email}")
+        st.header("🛂 Clinical Portfolio")
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         
-        up_file = st.file_uploader("Sync CV Data", type=['pdf', 'docx'])
         if up_file:
             raw_txt = get_raw_text(up_file)
-            if raw_txt and st.button("🚀 Scrape Clinical Data"):
-                with st.spinner("Processing medical records..."):
-                    st.session_state.portfolio_data = run_extraction_cycle(raw_txt)
-                    if st.session_state.portfolio_data:
-                        st.success(f"Extracted {len(st.session_state.portfolio_data)} items.")
-                    else:
-                        st.error("AI returned zero items. Verify CV formatting.")
+            if raw_txt:
+                st.success(f"File Read: {len(raw_txt)} characters found.")
+                if st.button("🚀 Re-Sync Entire CV"):
+                    st.session_state.final_portfolio = extract_and_organize(raw_txt)
+            else:
+                st.error("No text found in file. Check if PDF is an image scan.")
 
-        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
 
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Experience", "💉 Procedures", "🔬 QIP & Projects", "📄 Raw Data"])
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience & Skills", "🔬 Projects", "📄 Raw Diagnostic"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
-        st.subheader("International Grade Mapping")
+        st.subheader("International Seniority Mapping")
         
         profile_db = supabase_client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
         curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Seniority", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
+        selected_tier = st.selectbox("Current Level", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
-        map_data = [{"Country": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in ["UK", "US", "Australia", "Poland"]]
+        map_data = [{"Jurisdiction": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in ["UK", "US", "Australia", "Poland"]]
         st.table(pd.DataFrame(map_data))
 
-    # 2. CLINICAL EXPERIENCE
+    # 2. EXPERIENCE & SKILLS
     with tabs[1]:
-        st.subheader("Rotations & Placements")
-        # Try to find anything that looks like a job/rotation
-        exp = [i for i in st.session_state.portfolio_data if 'type' in i and any(x in str(i['type']).lower() for x in ['job', 'rotation', 'work', 'exp', 'place'])]
-        if exp:
-            for e in exp:
-                with st.expander(f"🏥 {e.get('title', 'Entry')}"):
-                    st.write(f"**Location:** {e.get('location', 'N/A')}")
-                    st.write(f"**Date:** {e.get('date', 'N/A')}")
+        st.subheader("Clinical History & Competencies")
+        
+        items = [i for i in st.session_state.final_portfolio if i.get('category') in ['Clinical', 'Skill', 'Education']]
+        if items:
+            for item in items:
+                icon = "🏥" if item.get('category') == 'Clinical' else "💉"
+                with st.expander(f"{icon} {item.get('label', 'Medical Entry')}"):
+                    st.write(f"**Date:** {item.get('date', 'N/A')}")
         else:
-            st.info("No rotations identified. Use the Raw Data tab to see unclassified items.")
+            st.info("No clinical history captured yet.")
 
-    # 3. PROCEDURES
+    # 3. PROJECTS
     with tabs[2]:
-        st.subheader("Procedural Logbook")
+        st.subheader("Audits & Research")
         
-        procs = [i for i in st.session_state.portfolio_data if 'type' in i and any(x in str(i['type']).lower() for x in ['proc', 'skill', 'log'])]
-        if procs:
-            for p in procs:
-                st.write(f"💉 **{p.get('title')}** — {p.get('location', 'N/A')}")
+        audits = [i for i in st.session_state.final_portfolio if i.get('category') == 'Audit']
+        if audits:
+            for a in audits:
+                st.write(f"🔬 **{a.get('label')}** — {a.get('date', 'N/A')}")
         else:
-            st.info("No procedures identified.")
+            st.info("No projects identified.")
 
-    # 4. QIP & PROJECTS
+    # 4. RAW DIAGNOSTIC
     with tabs[3]:
-        st.subheader("Quality Improvement & Research")
-        
-        qips = [i for i in st.session_state.portfolio_data if 'type' in i and any(x in str(i['type']).lower() for x in ['audit', 'qip', 'research', 'project'])]
-        if qips:
-            for q in qips:
-                st.write(f"🔬 **{q.get('title')}** — {q.get('date', 'N/A')}")
+        st.subheader("System Data Feed")
+        if st.session_state.final_portfolio:
+            st.dataframe(pd.DataFrame(st.session_state.final_portfolio), use_container_width=True)
         else:
-            st.info("No audits identified.")
+            st.warning("The AI returned zero items. This usually happens if the CV is an image/scanned PDF (OCR) or the medical terms were not recognized.")
 
-    # 5. RAW DATA (The "Catch-All")
-    with tabs[4]:
-        st.subheader("All Scraped Data")
-        st.write("If the categories above are empty, look here. This is every object the AI found.")
-        if st.session_state.portfolio_data:
-            st.dataframe(pd.DataFrame(st.session_state.portfolio_data), use_container_width=True)
-            if st.button("💾 Save All to Cloud"):
-                st.toast("Syncing with Supabase...")
-        else:
-            st.warning("No data found in the current session.")
-
-# --- LOGIN GATE ---
+# --- LOGIN ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Passport Gateway")
+    st.title("🏥 Medical Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")
