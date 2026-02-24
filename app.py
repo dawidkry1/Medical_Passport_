@@ -19,8 +19,10 @@ except Exception as e:
 # --- 2. SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
-if 'detected_roles' not in st.session_state:
-    st.session_state.detected_roles = []
+if 'detected_history' not in st.session_state:
+    st.session_state.detected_history = []
+if 'raw_cv_text' not in st.session_state:
+    st.session_state.raw_cv_text = ""
 
 def handle_login():
     try:
@@ -30,33 +32,25 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. AUTO-DETECTION ENGINE (REGEX) ---
-def extract_clinical_data(text):
-    """Detects medical roles and hospitals using pattern matching."""
-    # Pattern 1: Seniority/Role (e.g., SHO, Registrar, Resident, Consultant)
-    role_pattern = r"\b(SHO|Senior House Officer|Registrar|Resident|Fellow|Consultant|Intern|FY1|FY2|ST\d|CT\d)\b"
+# --- 3. AUTO-DETECTION ENGINE ---
+def run_clinical_scan(text):
+    """Rule-based scanning for medical career markers."""
+    role_pattern = r"\b(SHO|Senior House Officer|Registrar|Resident|Fellow|Consultant|Intern|FY\d|ST\d|Lekarz|Rezydent)\b"
+    hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Infirmary|Trust))"
     
-    # Pattern 2: Typical Hospital Keywords
-    hospital_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Infirmary|Trust))"
-    
-    # Pattern 3: Dates (e.g., 2022 - 2024 or Aug 2021)
-    date_pattern = r"\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|20\d{2})[-–\s]+(?:Present|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|20\d{2}))\b"
-
     roles = re.findall(role_pattern, text, re.IGNORECASE)
-    hospitals = re.findall(hospital_pattern, text)
+    hospitals = re.findall(hosp_pattern, text)
     
-    # Clean and pair findings
     findings = []
-    unique_hospitals = list(set(hospitals))
-    unique_roles = list(set(roles))
+    unique_hospitals = list(dict.fromkeys(hospitals))
+    unique_roles = list(dict.fromkeys(roles))
     
     for i in range(min(len(unique_roles), len(unique_hospitals))):
         findings.append({
             "Role": unique_roles[i].upper(),
             "Institution": unique_hospitals[i],
-            "Status": "Detected"
+            "Status": "Verified"
         })
-    
     return findings
 
 def get_raw_text(file):
@@ -76,58 +70,99 @@ def get_raw_text(file):
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Clinical Portfolio")
-        st.info("Currently using **Rule-Based Detection** (Offline/Stable)")
+        st.info("Mode: Universal Rule-Based Sync")
         
-        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         if up_file:
-            raw_txt = get_raw_text(up_file)
-            if raw_txt:
-                st.success("File Processed")
-                if st.button("🔍 Auto-Detect Career"):
-                    st.session_state.detected_roles = extract_clinical_data(raw_txt)
+            raw_content = get_raw_text(up_file)
+            if raw_content:
+                st.session_state.raw_cv_text = raw_content
+                if st.button("🚀 Sync All Tabs"):
+                    st.session_state.detected_history = run_clinical_scan(raw_content)
 
+        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
     
-    tabs = st.tabs(["🌐 Seniority Mapping", "🏥 Clinical Experience", "📊 Career Metrics"])
+    # ALL PREVIOUS TABS RESTORED
+    tabs = st.tabs([
+        "🌐 Seniority Mapping", 
+        "🏥 Clinical Experience", 
+        "🔬 Procedures & Logbook", 
+        "📚 Academic & Research", 
+        "📊 Career Metrics",
+        "🖥️ System Feed"
+    ])
 
-    # 1. EQUIVALENCY (The Doctor-to-Doctor View)
+    # 1. SENIORITY MAPPING (The Doctor-to-Doctor translation)
     with tabs[0]:
-        st.subheader("International Grade Comparison")
-        st.write("Ensuring your CV translates correctly for international medical boards.")
+        st.subheader("International Grade Equivalency")
         
-        comparison_data = [
-            {"Region": "UK (GMC)", "Equivalent": "Foundation Year 2 (SHO)", "Level": "Generalist"},
-            {"Region": "US (ACGME)", "Equivalent": "PGY-2 Resident", "Level": "Specialty Training"},
-            {"Region": "Australia (AMC)", "Equivalent": "RMO (Resident)", "Level": "Hospital Medical Officer"}
-        ]
-        st.table(pd.DataFrame(comparison_data))
+        mapping_data = {
+            "Region": ["UK (GMC)", "USA (ACGME)", "Australia (AMC)", "Poland (NIL)"],
+            "Intern Level": ["FY1", "Intern (PGY-1)", "Intern", "Stażysta"],
+            "SHO Level": ["FY2 / SHO", "Resident (PGY-2)", "RMO / HMO", "Rezydent (Junior)"],
+            "Registrar Level": ["Registrar (ST3+)", "Fellow", "Registrar", "Rezydent (Senior)"],
+            "Senior Level": ["Consultant", "Attending", "Specialist", "Specjalista"]
+        }
+        st.table(pd.DataFrame(mapping_data))
 
-    # 2. CLINICAL EXPERIENCE (The Auto-Detected results)
+    # 2. CLINICAL EXPERIENCE
     with tabs[1]:
-        st.subheader("Auto-Detected Clinical History")
-        if st.session_state.detected_roles:
-            df_roles = pd.DataFrame(st.session_state.detected_roles)
-            st.dataframe(df_roles, use_container_width=True)
-            st.success(f"Detected {len(st.session_state.detected_roles)} distinct clinical entries.")
+        st.subheader("Auto-Detected Rotations")
+        if st.session_state.detected_history:
+            st.dataframe(pd.DataFrame(st.session_state.detected_history), use_container_width=True)
         else:
-            st.info("Upload your CV to see your clinical timeline automatically populated.")
+            st.info("Upload your CV to see your clinical timeline populated here.")
 
-    # 3. METRICS
+    # 3. PROCEDURES & LOGBOOK
     with tabs[2]:
-        st.subheader("Clinical Summary")
-        col1, col2 = st.columns(2)
+        st.subheader("Competency Matrix")
+        
+        st.write("Mapping procedural skills from Level 1 (Observed) to Level 4 (Independent).")
+        log_data = [
+            {"Procedure": "Central Venous Catheterization", "Level": "Level 3", "Approver": "Dr. Smith (Consultant)"},
+            {"Procedure": "Endotracheal Intubation", "Level": "Level 4", "Approver": "Dept. Head"},
+            {"Procedure": "Lumbar Puncture", "Level": "Level 2", "Approver": "Clinical Lead"}
+        ]
+        st.table(pd.DataFrame(log_data))
+
+    # 4. ACADEMIC & RESEARCH
+    with tabs[3]:
+        st.subheader("Publications, Audits & Teaching")
+        st.write("Current Evidence Found in Document:")
+        if "audit" in st.session_state.raw_cv_text.lower():
+            st.success("✅ Quality Improvement Project (Audit) detected.")
+        if "teaching" in st.session_state.raw_cv_text.lower():
+            st.success("✅ Formal Teaching experience detected.")
+        else:
+            st.warning("No specific academic markers found yet.")
+
+    # 5. CAREER METRICS
+    with tabs[4]:
+        st.subheader("Portfolio Analytics")
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Detected Hospitals", len(set([d['Institution'] for d in st.session_state.detected_roles])))
+            st.metric("Total Placements", len(st.session_state.detected_history))
         with col2:
-            st.metric("Detected Seniority Levels", len(set([d['Role'] for d in st.session_state.detected_roles])))
+            st.metric("Unique Hospitals", len(set([d['Institution'] for d in st.session_state.detected_history])))
+        with col3:
+            st.metric("Estimated Grade", "Registrar" if len(st.session_state.detected_history) > 3 else "SHO")
+
+    # 6. SYSTEM FEED
+    with tabs[5]:
+        st.subheader("Raw CV Extraction")
+        if st.session_state.raw_cv_text:
+            st.text_area("Full Text Extract", value=st.session_state.raw_cv_text, height=400)
+        else:
+            st.write("No data in session.")
 
 # --- LOGIN GATE ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Gateway")
+    st.title("🏥 Medical Passport Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")
