@@ -39,7 +39,7 @@ try:
     else:
         st.error("⚠️ GEMINI_API_KEY missing.")
 except Exception as e:
-    st.error(f"Config Error: {e}")
+    st.error(f"Configuration Error: {e}")
 
 # --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
@@ -66,14 +66,14 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. ROBUST EXTRACTION & SMART CHUNKING ---
+# --- 4. ENGINE ---
 def get_raw_text(file):
     text = ""
     try:
         if file.name.endswith('.pdf'):
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
-                    text += page.extract_text() + "\n"
+                    text += (page.extract_text() or "") + "\n"
         elif file.name.endswith('.docx'):
             doc = docx.Document(file)
             text = "\n".join([p.text for p in doc.paragraphs])
@@ -81,12 +81,9 @@ def get_raw_text(file):
     except: return ""
 
 def ai_process_chunk(chunk_text):
-    # A more "desperate" prompt that tells the AI to find ANYTHING medical.
     prompt = (
-        "Identify every medical detail in this text. "
-        "Sort them into these categories: rotations, procedures, qips, teaching, education. "
-        "Even if a detail is vague, include it. Use generic field names. "
-        "Return ONLY valid JSON."
+        "Extract medical CV data into JSON. Categories: rotations, procedures, qips, teaching, education. "
+        "For rotations, find 'specialty' and 'hospital'. For procedures, find 'name' and 'level'. "
         f"\n\nText: {chunk_text}"
     )
     try:
@@ -101,69 +98,67 @@ def ai_process_chunk(chunk_text):
 
 def run_deep_scan(full_text):
     combined = {"rotations": [], "procedures": [], "qips": [], "teaching": [], "education": []}
-    # Break into 3000-character segments
     segments = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
-    
     prog = st.progress(0)
-    status = st.empty()
-    
     for idx, seg in enumerate(segments):
-        status.text(f"Scanning Section {idx+1} of {len(segments)}...")
         res = ai_process_chunk(seg)
         if res:
-            for key in combined:
+            for key in combined.keys():
                 if key in res and isinstance(res[key], list):
                     combined[key].extend(res[key])
         prog.progress((idx + 1) / len(segments))
         time.sleep(1)
-        
-    status.text("Scan Complete.")
     return combined
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Clinical Portfolio")
-        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
-        
+        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
         if up_file:
             raw_text = get_raw_text(up_file)
-            if raw_text:
-                st.success("File Content Extracted.")
-                if st.button("🚀 Run Deep Clinical Scan"):
-                    st.session_state.parsed_data = run_deep_scan(raw_text)
-            else:
-                st.error("No text found in file.")
+            if raw_text and st.button("🚀 Run Analysis"):
+                st.session_state.parsed_data = run_deep_scan(raw_text)
+                st.success("Scan Complete.")
 
-        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
+
+    # Metrics Summary
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rotations", len(st.session_state.parsed_data.get("rotations", [])))
+    c2.metric("Procedures", len(st.session_state.parsed_data.get("procedures", [])))
+    c3.metric("Audits/QIPs", len(st.session_state.parsed_data.get("qips", [])))
+    c4.metric("Teaching", len(st.session_state.parsed_data.get("teaching", [])))
     
     tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education"])
 
-    # 1. EQUIVALENCY
+    # 1. EQUIVALENCY (Defensive Line 127 fix)
     with tabs[0]:
         st.subheader("International Seniority Mapping")
         
         profile_db = supabase_client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
-        curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Level", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
-        
+        curr_tier = "Tier 1: Junior (Intern/FY1)"
+        if profile_db and len(profile_db) > 0:
+            curr_tier = profile_db[0].get('global_tier', curr_tier)
+            
+        selected_tier = st.selectbox("Current Grade", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         targets = ["UK", "US", "Australia", "Poland"]
-        map_data = [{"Country": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in targets]
+        
+        map_data = []
+        for c in targets:
+            equiv = EQUIVALENCY_MAP.get(selected_tier, {}).get(c, "N/A")
+            map_data.append({"Country": c, "Title": equiv})
         st.table(pd.DataFrame(map_data))
 
     # 2. EXPERIENCE
     with tabs[1]:
         st.subheader("Clinical Rotations")
-        items = st.session_state.parsed_data.get("rotations", [])
-        if not items: st.warning("AI did not label any 'rotations'. Check your file for keywords like 'Resident', 'Intern', or 'Department'.")
-        for i, item in enumerate(items):
-            # Dynamic Labeling: Show whatever data is available
-            label = next((item[k] for k in ['specialty', 'title', 'role', 'department'] if k in item), f"Experience {i+1}")
+        for item in st.session_state.parsed_data.get("rotations", []):
+            label = item.get('specialty') or item.get('hospital') or "Medical Placement"
             with st.expander(f"📍 {label}"):
                 st.write(item)
 
@@ -171,29 +166,31 @@ def main_dashboard():
     with tabs[2]:
         st.subheader("Procedural Logbook")
         
-        items = st.session_state.parsed_data.get("procedures", [])
-        if not items: st.info("No procedures identified.")
-        for item in items:
-            name = next((item[k] for k in ['name', 'procedure', 'skill'] if k in item), "Medical Procedure")
-            lvl = next((item[k] for k in ['level', 'competency', 'status'] if k in item), "N/A")
+        for item in st.session_state.parsed_data.get("procedures", []):
+            name = item.get('name') or item.get('procedure') or "Procedure"
+            lvl = item.get('level') or "N/A"
             st.write(f"💉 {name} — **{lvl}**")
 
     # 4. QIP & AUDIT
     with tabs[3]:
         st.subheader("Quality Improvement")
         
-        items = st.session_state.parsed_data.get("qips", [])
-        for item in items:
-            st.write(f"🔬 {item}")
+        for item in st.session_state.parsed_data.get("qips", []):
+            title = item.get('title') or "Audit Project"
+            st.write(f"🔬 {title}")
 
-    # 5. TEACHING & EDUCATION
+    # 5. TEACHING & EDUCATION (Defensive Line 207 fix)
     with tabs[4]:
+        st.subheader("Teaching Portfolio")
         for item in st.session_state.parsed_data.get("teaching", []):
-            st.write(f"👨‍🏫 {item}")
+            t_title = item.get('topic') or item.get('title') or "Teaching Session"
+            st.write(f"👨‍🏫 {t_title}")
     
     with tabs[5]:
+        st.subheader("Education & CME")
         for item in st.session_state.parsed_data.get("education", []):
-            st.write(f"📚 {item}")
+            e_title = item.get('course') or item.get('title') or "Course"
+            st.write(f"📚 {e_title}")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
@@ -203,5 +200,4 @@ if not st.session_state.authenticated:
         st.text_input("Password", type="password", key="login_password")
         st.form_submit_button("Sign In", on_click=handle_login)
 else:
-    main_dashboard()
     main_dashboard()
