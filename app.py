@@ -1,28 +1,13 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from google import genai
-from google.genai import types
+import google.generativeai as genai  # Switched to the more stable standard library
 import pdfplumber
 import docx
-import json
-import re
 import time
 
 # --- 1. CORE CONFIG ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
-
-hide_st_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            .stAppDeployButton {display:none;}
-            [data-testid="stToolbar"] {visibility: hidden !important;}
-            [data-testid="stDecoration"] {display:none;}
-            </style>
-            """
-st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # Connection Setup
 try:
@@ -31,31 +16,20 @@ try:
     supabase_client = create_client(URL, KEY)
     
     if "GEMINI_API_KEY" in st.secrets:
-        ai_client = genai.Client(
-            api_key=st.secrets["GEMINI_API_KEY"],
-            http_options={'api_version': 'v1'}
-        )
-        MODEL_ID = "gemini-1.5-flash" 
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
     else:
-        st.error("⚠️ GEMINI_API_KEY missing.")
+        st.error("⚠️ GEMINI_API_KEY missing from secrets.")
 except Exception as e:
     st.error(f"Config Error: {e}")
 
-# --- 2. GLOBAL MAPPING DATA ---
-EQUIVALENCY_MAP = {
-    "Tier 1: Junior (Intern/FY1)": {"UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern", "Poland": "Lekarz stażysta"},
-    "Tier 2: Intermediate (SHO/Resident)": {"UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO", "Poland": "Lekarz rezydent (Junior)"},
-    "Tier 3: Senior (Registrar/Fellow)": {"UK": "ST3+ / Registrar", "US": "Chief Resident / Fellow", "Australia": "Registrar", "Poland": "Lekarz rezydent (Senior)"},
-    "Tier 4: Expert (Consultant/Attending)": {"UK": "Consultant / SAS", "US": "Attending Physician", "Australia": "Consultant / Specialist", "Poland": "Lekarz specjalista"}
-}
-
-# --- 3. SESSION STATE ---
+# --- 2. SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
-if 'scraped_lines' not in st.session_state:
-    st.session_state.scraped_lines = []
+if 'scraped_text' not in st.session_state:
+    st.session_state.scraped_text = ""
 
 def handle_login():
     try:
@@ -66,7 +40,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE FAIL-SAFE ENGINE ---
+# --- 3. THE EXTRACTION ENGINE ---
 def get_raw_text(file):
     text = ""
     try:
@@ -80,58 +54,47 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def extract_medical_lines(chunk_text):
-    """Asks for plain text lines instead of complex JSON to avoid crashes."""
+def run_unified_scan(full_text):
+    """One single high-instruction call."""
     prompt = (
-        "Identify every clinical rotation, medical job, hospital, procedure, and audit in this text. "
-        "List them as plain text lines. Format each line exactly like this: "
-        "CATEGORY | TITLE | DATE "
-        "Use categories: EXPERIENCE, PROCEDURE, QIP, EDUCATION. "
-        f"\n\nCV Text: {chunk_text}"
+        "You are an expert medical recruiter. Extract all information from this CV. "
+        "List every job, hospital, specialty, and clinical procedure you find. "
+        "For each item, start a new line with the word 'ITEM:' followed by the details. "
+        "Include dates if found. If no clinical data is found, output 'EMPTY'. "
+        f"\n\nCV CONTENT:\n{full_text[:8000]}" # Sending first 8k chars to stay safe
     )
     try:
-        response = ai_client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt
-        )
-        return response.text.split('\n')
-    except:
-        return []
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"API ERROR: {str(e)}"
 
-def run_failsafe_scan(full_text):
-    all_lines = []
-    # 2000 character chunks for stability
-    chunks = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
-    prog = st.progress(0)
-    status = st.empty()
-    
-    for idx, chunk in enumerate(chunks):
-        status.text(f"Scribing CV Section {idx+1} of {len(chunks)}...")
-        lines = extract_medical_lines(chunk)
-        if lines:
-            for line in lines:
-                if "|" in line: # Only keep lines that follow our pattern
-                    all_lines.append(line)
-        prog.progress((idx + 1) / len(chunks))
-        time.sleep(1)
-    
-    status.text("Scribing Complete.")
-    return all_lines
-
-# --- 5. MAIN DASHBOARD ---
+# --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Clinical Portfolio")
+        
+        # Handshake Test
+        if st.button("🧪 Test AI Connection"):
+            try:
+                test_res = model.generate_content("Say 'System Online'")
+                st.success(f"AI Response: {test_res.text}")
+            except Exception as e:
+                st.error(f"Connection Failed: {e}")
+
+        st.divider()
         up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
         
         if up_file:
             raw_txt = get_raw_text(up_file)
             if raw_txt:
-                st.info(f"CV Loaded ({len(raw_txt)} characters)")
-                if st.button("🚀 Force Portfolio Sync"):
-                    st.session_state.scraped_lines = run_failsafe_scan(raw_txt)
+                st.info(f"Detected {len(raw_txt)} characters.")
+                if st.button("🚀 Sync Medical Portfolio"):
+                    with st.spinner("Analyzing Clinical History..."):
+                        st.session_state.scraped_text = run_unified_scan(raw_txt)
+                        st.success("Analysis Finished.")
             else:
-                st.error("No text detected.")
+                st.error("Could not read text from file.")
 
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
@@ -139,66 +102,38 @@ def main_dashboard():
 
     st.title("🩺 Global Medical Passport")
 
-    # Helper to parse the "|" lines
-    def get_data_by_cat(cat_name):
-        results = []
-        for line in st.session_state.scraped_lines:
-            parts = line.split("|")
-            if len(parts) >= 2 and cat_name.upper() in parts[0].upper():
-                results.append({
-                    "title": parts[1].strip(),
-                    "date": parts[2].strip() if len(parts) > 2 else "N/A"
-                })
-        return results
-
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "📄 Raw Scribe"])
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 Raw AI Feed"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
-        st.subheader("International Seniority Mapping")
+        st.subheader("International Grade Mapping")
         
-        profile_db = supabase_client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
-        curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Grade", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
-        
-        map_data = [{"Region": r, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(r, "N/A")} for r in ["UK", "US", "Australia", "Poland"]]
-        st.table(pd.DataFrame(map_data))
+        # (Equivalency Table Logic simplified for this debug version)
+        st.info("Mapping will update once CV is processed.")
 
-    # 2. EXPERIENCE
+    # 2. CLINICAL RECORDS
     with tabs[1]:
-        st.subheader("Clinical Rotations")
-        exp = get_data_by_cat("EXPERIENCE")
-        if exp:
-            for e in exp:
-                with st.expander(f"🏥 {e['title']}"):
-                    st.write(f"**Dates:** {e['date']}")
+        st.subheader("Extracted Experiences & Procedures")
+        
+        if st.session_state.scraped_text:
+            lines = st.session_state.scraped_text.split('\n')
+            items = [l.replace("ITEM:", "").strip() for l in lines if "ITEM:" in l.upper()]
+            
+            if items:
+                for idx, item in enumerate(items):
+                    st.write(f"🔹 {item}")
+            else:
+                st.warning("AI responded but found no clinical items. Check the Raw AI Feed.")
         else:
-            st.info("No rotations identified.")
+            st.info("Upload and Sync your CV to see your clinical history.")
 
-    # 3. PROCEDURES
+    # 3. RAW AI FEED
     with tabs[2]:
-        st.subheader("Procedural Logbook")
-        
-        procs = get_data_by_cat("PROCEDURE")
-        for p in procs:
-            st.write(f"💉 **{p['title']}** — {p['date']}")
-
-    # 4. QIP & AUDIT
-    with tabs[3]:
-        st.subheader("Quality Improvement")
-        
-        qips = get_data_by_cat("QIP")
-        for q in qips:
-            st.write(f"🔬 **{q['title']}** ({q['date']})")
-
-    # 5. RAW SCRIBE
-    with tabs[4]:
-        st.subheader("Direct AI Output")
-        if st.session_state.scraped_lines:
-            for line in st.session_state.scraped_lines:
-                st.text(line)
+        st.subheader("Diagnostic Output")
+        if st.session_state.scraped_text:
+            st.text_area("Full AI Response:", value=st.session_state.scraped_text, height=400)
         else:
-            st.warning("No clinical lines were captured by the AI.")
+            st.write("Waiting for CV sync...")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
