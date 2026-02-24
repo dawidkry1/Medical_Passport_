@@ -1,6 +1,7 @@
 streamlit
 pandas
 supabase
-fpdf
+google-generativeai
 pdfplumber
 python-docx
+fpdf
